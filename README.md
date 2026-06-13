@@ -13,13 +13,24 @@ PyTorch projects that benefit from a reusable `fit()` / `evaluate()` /
 
 ### Install
 
-From a local checkout, run
+Clone the repository and enter the project directory:
+
+```bash
+git clone https://github.com/Mythcell/ember.git
+cd ember
+```
+
+#### uv (recommended)
+
+Create and sync a local uv-managed environment from the project metadata:
 
 ```bash
 uv sync
 ```
 
-or, to install into an existing environment,
+#### pip
+
+Install Ember into an existing environment with an editable install:
 
 ```bash
 pip install -e .

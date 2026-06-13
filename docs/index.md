@@ -1,10 +1,5 @@
 # Ember
 
-!!! info
-
-    Portions of this documentation were drafted and formatted with AI assistance,
-    then reviewed and edited by the maintainer.
-
 Ember is a lightweight Fabric-based training library for PyTorch. It keeps the
 parts of a trainer that are useful during iterative model work while leaving
 the training script and model structure under your control.
@@ -42,6 +37,11 @@ override the relevant step methods.
 - [Custom Loops](examples/custom-loops.md): adapt Ember to objectives that do
   not fit the default supervised loop.
 - [API Reference](api.md): see the documented import surface at a glance.
+
+!!! info
+
+    Portions of this documentation were drafted and formatted with AI assistance,
+    then reviewed and edited by the maintainer.
 
 ## What `ember` Provides
 

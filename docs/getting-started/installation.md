@@ -1,16 +1,25 @@
 # Installation
 
-From a local checkout, the simplest setup is:
+## Clone the Repository
+
+Clone Ember and enter the project directory:
+
+```bash
+git clone https://github.com/Mythcell/ember.git
+cd ember
+```
+
+## uv (recommended)
+
+Create and sync a local uv-managed environment from the project metadata:
 
 ```bash
 uv sync
 ```
 
-This creates and syncs a local uv-managed environment from the project
-metadata.
+## pip
 
-If you want to install Ember into an existing environment instead, use an
-editable install:
+Install Ember into an existing environment with an editable install:
 
 ```bash
 pip install -e .

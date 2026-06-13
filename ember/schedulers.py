@@ -250,23 +250,3 @@ class PiecewiseLinearLRScheduler(LRScheduler):
         self.start_val = state_dict["start_val"]
         self.milestones = state_dict["milestones"]
         super().load_state_dict(state_dict)
-
-
-# if __name__ == "__main__":
-#     epochs = torch.arange(-1, 50, step=1)
-#     # lscheduler = LinearParamScheduler(
-#     #     start_value=1,
-#     #     end_value=10,
-#     #     startup_epochs=10,
-#     #     interp_epochs=30,
-#     #     # profile="decay",
-#     # )
-#     lscheduler = PiecewiseLinearParamScheduler(
-#         start_val=1,
-#         milestones=[(2, 5), (10, 40), (15, 45), (3, 20)],
-#     )
-#     for epoch in epochs:
-#         print(epoch, lscheduler(int(epoch)))
-#     values = [lscheduler(epoch) for epoch in epochs]
-#     plt.plot(epochs, values)
-#     plt.show()

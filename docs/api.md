@@ -1,7 +1,6 @@
 # API Reference
 
-This page is a hand-written import map for Ember's documented surface. It is not
-generated from docstrings.
+This page is an explicit import map for Ember's documented surface.
 
 ## Preferred Top-Level Imports
 
@@ -22,7 +21,12 @@ from ember import EmberData, EmberModel, EmberRunner, EmberTracker
 from ember.callbacks import EarlyStopping, EmberCallback, ModelCheckpoint
 from ember.callbacks import OptunaTrialPruner
 from ember.mnist import EmberMNIST
-from ember.schedulers import LinearParamScheduler
+from ember.schedulers import (
+    ExponentialParamScheduler,
+    LinearParamScheduler,
+    PiecewiseLinearLRScheduler,
+    PiecewiseLinearParamScheduler,
+)
 from ember.utils import instantiate
 ```
 
@@ -33,8 +37,11 @@ from ember.utils import instantiate
 | `EarlyStopping` | Metric-based early stopping callback. |
 | `OptunaTrialPruner` | Optuna pruning callback. |
 | `EmberMNIST` | Small MNIST `EmberData` implementation used by examples. |
+| `LinearParamScheduler` | Linear epoch-based parameter scheduler. |
+| `ExponentialParamScheduler` | Exponential epoch-based parameter scheduler. |
+| `PiecewiseLinearParamScheduler` | Piecewise linear epoch-based parameter scheduler. |
+| `PiecewiseLinearLRScheduler` | Piecewise linear PyTorch learning-rate scheduler. |
 | `instantiate` | Construct trusted classes from `module.Class` strings and parameter dictionaries. |
-| `ember.schedulers` | Small parameter and LR schedulers for epoch-based values. |
 
 ## Utility Modules
 
