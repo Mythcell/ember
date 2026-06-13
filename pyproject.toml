@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ember"
+dynamic = ["version"]
+requires-python = ">=3.12,<3.14"
+description = "A lightweight Fabric-based training library for PyTorch"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+dependencies = [
+    "torch~=2.12.0",
+    "torchvision~=0.27.0",
+    "lightning[extra]<=2.6.1",
+    "pytorch-lightning<=2.6.1",
+    "torchmetrics",
+    "torchinfo",
+    "tensorboard",
+    "numpy",
+    "tqdm",
+    "optuna",
+    "omegaconf",
+    "typer",
+    "rich",
+]
+authors = [{name = "Mitchell Cavanagh", email = "dev@mythcell.me"}]
+maintainers = [{name = "Mitchell Cavanagh", email = "dev@mythcell.me"}]
+
+[project.urls]
+Documentation = "https://mythcell.github.io/ember/"
+Issues = "https://github.com/Mythcell/ember/issues"
+Repository = "https://github.com/Mythcell/ember"
+
+[project.scripts]
+ember = "ember.cli:app"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "ember/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ember"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "LICENSE.md",
+    "README.md",
+    "docs",
+    "ember",
+    "examples",
+    "pyproject.toml",
+    "zensical.toml",
+]
