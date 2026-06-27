@@ -3,8 +3,8 @@ import torchmetrics
 from lightning import Fabric
 from torch.optim import Adam
 
-from ember.callbacks import ModelCheckpoint
 from ember import EmberModel, EmberRunner
+from ember.callbacks import ModelCheckpoint
 from ember.mnist import EmberMNIST
 from ember.utils import instantiate
 

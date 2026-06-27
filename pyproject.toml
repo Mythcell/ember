@@ -10,19 +10,17 @@ description = "A lightweight Fabric-based training library for PyTorch"
 readme = "README.md"
 license = { file = "LICENSE.md" }
 dependencies = [
-    "torch~=2.12.0",
-    "torchvision~=0.27.0",
-    "lightning[extra]<=2.6.1",
-    "pytorch-lightning<=2.6.1",
-    "torchmetrics",
-    "torchinfo",
-    "tensorboard",
-    "numpy",
-    "tqdm",
-    "optuna",
-    "omegaconf",
-    "typer",
-    "rich",
+    "lightning==2.6.5",
+    "numpy>=2.4.6",
+    "omegaconf>=2.3.1",
+    "optuna>=4.9.0",
+    "rich>=15.0.0",
+    "torch==2.12.1",
+    "torchinfo>=1.8.0",
+    "torchmetrics>=1.9.0",
+    "torchvision==0.27.1",
+    "tqdm>=4.68.3",
+    "typer>=0.26.7",
 ]
 authors = [{name = "Mitchell Cavanagh", email = "dev@mythcell.me"}]
 maintainers = [{name = "Mitchell Cavanagh", email = "dev@mythcell.me"}]
@@ -58,4 +56,34 @@ only-include = [
     "examples",
     "pyproject.toml",
     "zensical.toml",
+]
+
+[tool.ruff]
+extend-exclude = ["ember/_version.py"]
+respect-gitignore = false
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "W", "I", "B", "UP", "SIM", "PLE", "RUF", "PTH"]
+ignore = ["F401"]
+
+[tool.pyrefly]
+enable-fallback-search-path = true
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+python-version = "3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+]
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.1.0",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
 ]

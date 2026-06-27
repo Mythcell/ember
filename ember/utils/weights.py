@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import Any
 
+import torch
 import torch.nn as nn
 
 INIT_FN_MAP: dict[str, Callable[..., Any]] = {
@@ -74,13 +75,10 @@ def init_weights(
                         f"Warning: Could not initialize '{module_name}'. "
                         f"Check if kwargs {params} are valid for {mode}. Error: {e}"
                     )
-            if (
-                hasattr(m, "bias")
-                and m.bias is not None
-                and "bias_val" in config[module_type]
-            ):
+            bias = getattr(m, "bias", None)
+            if isinstance(bias, torch.Tensor) and "bias_val" in config[module_type]:
                 bias_val = config[module_type]["bias_val"]
-                nn.init.constant_(m.bias, bias_val)
+                nn.init.constant_(bias, bias_val)
                 if verbose:
                     print(
                         f"Initialized '{module_name}' ({module_type.__name__}) "

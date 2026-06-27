@@ -14,8 +14,8 @@ from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from ember.utils.grad import set_requires_grad
 from ember.utils._summary import model_summary
+from ember.utils.grad import set_requires_grad
 
 if TYPE_CHECKING:
     from lightning.fabric.wrappers import _FabricModule
@@ -89,7 +89,10 @@ class EmberModel:
             self.fabric_setup()
         self.loss_fn = loss_fn
         self.metrics = self.fabric.to_device(metrics) if metrics else []
-        self.aug_fn: Callable[[torch.Tensor], torch.Tensor] = aug_fn or nn.Identity()
+        self.aug_fn = cast(
+            "Callable[[torch.Tensor], torch.Tensor]",
+            nn.Identity() if aug_fn is None else aug_fn,
+        )
         self.schedulers = schedulers
         self.reduce_lr_on_plateau_monitor = reduce_lr_on_plateau_monitor
 
@@ -605,8 +608,7 @@ class EmberModel:
                         if (
                             batch_idx >= batch_limit_train and batch_limit_train > 0
                         ) or (
-                            step_target is not None
-                            and self.step_count >= step_target
+                            step_target is not None and self.step_count >= step_target
                         ):
                             break
                         self._trigger_callbacks(
@@ -682,11 +684,14 @@ class EmberModel:
                     val_progress_total = (
                         batch_limit_val if batch_limit_val > 0 else len(active_val_data)
                     )
-                    with self._progress_bar(
-                        total=val_progress_total,
-                        desc="Validation",
-                        show_progress_bar=show_progress_bar,
-                    ) as progress_bar, torch.inference_mode():
+                    with (
+                        self._progress_bar(
+                            total=val_progress_total,
+                            desc="Validation",
+                            show_progress_bar=show_progress_bar,
+                        ) as progress_bar,
+                        torch.inference_mode(),
+                    ):
                         for batch_idx, batch in enumerate(active_val_data):
                             if batch_idx >= batch_limit_val and batch_limit_val > 0:
                                 break
@@ -813,11 +818,14 @@ class EmberModel:
             )
 
             self.model.eval()
-            with self._progress_bar(
-                total=eval_data_len,
-                desc="Evaluation",
-                show_progress_bar=show_progress_bar,
-            ) as progress_bar, torch.inference_mode():
+            with (
+                self._progress_bar(
+                    total=eval_data_len,
+                    desc="Evaluation",
+                    show_progress_bar=show_progress_bar,
+                ) as progress_bar,
+                torch.inference_mode(),
+            ):
                 for batch_idx, batch in enumerate(eval_data):
                     eval_step_out = self.eval_step(batch, batch_idx, eval_tracker)
                     if eval_step_out is not None:
@@ -895,11 +903,14 @@ class EmberModel:
 
             self.model.eval()
             batch_preds: list[tuple[torch.Tensor, ...]] = []
-            with self._progress_bar(
-                total=data_len,
-                desc="Predict",
-                show_progress_bar=show_progress_bar,
-            ) as progress_bar, torch.inference_mode():
+            with (
+                self._progress_bar(
+                    total=data_len,
+                    desc="Predict",
+                    show_progress_bar=show_progress_bar,
+                ) as progress_bar,
+                torch.inference_mode(),
+            ):
                 for batch_idx, batch in enumerate(data):
                     pred = self.predict_step(batch, batch_idx)
                     batch_preds.append(pred if isinstance(pred, tuple) else (pred,))

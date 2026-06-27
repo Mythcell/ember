@@ -134,7 +134,7 @@ def _validate_milestones(
     epochs = [m[1] for m in milestones]
     if len(epochs) > len(set(epochs)):
         raise ValueError("Duplicate epochs. Milestone epochs should be unique.")
-    return [(start_val, 0)] + milestones
+    return [(start_val, 0), *milestones]
 
 
 class PiecewiseLinearParamScheduler(EmberParamScheduler):

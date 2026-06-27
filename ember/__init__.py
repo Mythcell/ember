@@ -4,11 +4,11 @@ except ImportError:
     __version__ = "unknown"
 
 __all__ = [
-    "__version__",
     "EmberData",
     "EmberModel",
     "EmberRunner",
     "EmberTracker",
+    "__version__",
 ]
 
 
