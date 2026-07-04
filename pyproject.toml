@@ -27,7 +27,6 @@ maintainers = [{name = "Mitchell Cavanagh", email = "dev@mythcell.me"}]
 
 [project.urls]
 Documentation = "https://mythcell.github.io/ember/"
-Issues = "https://github.com/Mythcell/ember/issues"
 Repository = "https://github.com/Mythcell/ember"
 
 [project.scripts]

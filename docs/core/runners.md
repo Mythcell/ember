@@ -35,6 +35,9 @@ Use `self.script_dir` when resolving files that live next to the runner, such
 as local model modules, configs, or data directories. That keeps runners
 independent of the current working directory used to launch the CLI.
 
+Use `self.project_root` when the runner lives inside a package and needs to
+import other local package modules without requiring an editable install.
+
 ## Config-Driven Runner
 
 The repository includes a runnable example in `examples/runner`. Its config
@@ -86,3 +89,31 @@ class MyRunner(EmberRunner):
 This provides Hydra-style object construction without making the entire project
 config-first. See [Instantiation](../utils/instantiation.md) for the detailed
 rules and safety caveats.
+
+## Nested Package Runner
+
+For a project laid out as a package, use fully qualified specs with
+`local_path=self.project_root`:
+
+```python
+from ember import EmberRunner
+from ember.utils import instantiate
+
+
+class TrainRunner(EmberRunner):
+    def run(self) -> None:
+        data = instantiate(
+            "my_project.data.TrainingData",
+            local_path=self.project_root,
+        )
+```
+
+Relative specs are supported too, but they need an explicit package anchor:
+
+```python
+data = instantiate(
+    "..data.TrainingData",
+    local_path=self.project_root,
+    package="my_project.runners",
+)
+```

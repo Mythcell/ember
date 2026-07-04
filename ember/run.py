@@ -20,6 +20,8 @@ class EmberRunner(ABC):
         cfg_path: Path to the configuration file (if any).
         script_dir: Directory containing the runner script. Useful for resolving
             relative paths to data, models, or other assets.
+        project_root: Nearest parent directory containing a project marker such as
+            `pyproject.toml` or `.git`, or `script_dir` when no marker is found.
         verbosity: Verbosity level (from cli `--verbose` flag).
 
     Runners are automatically discovered via the following resolution order:
@@ -57,11 +59,13 @@ class EmberRunner(ABC):
         cfg_path: Path | None = None,
         script_dir: Path | None = None,
         verbosity: int = 0,
+        project_root: Path | None = None,
     ) -> None:
         self.cfg_path = cfg_path
         self.cfg = OmegaConf.load(cfg_path) if cfg_path else None
         self.script_dir = script_dir
         self.verbosity = verbosity
+        self.project_root = project_root
 
     @abstractmethod
     def run(self) -> None:

@@ -13,6 +13,7 @@ def instantiate(
     params: dict[str, Any] | None = None,
     local_path: Path | None = None,
     expected_type: type | None = None,
+    package: str | None = None,
 ) -> Any:
     """
     Instantiates a class directly from a string specifier.
@@ -32,6 +33,7 @@ def instantiate(
         local_path: Optional path for discovering and importing local modules from file.
         expected_type: The expected type of the initialized object. Acts as a simple
             type check guard.
+        package: Optional package anchor for relative import specs.
 
     Raises:
         TypeError: If the resulting object is not of the expected_type (only if the user
@@ -56,8 +58,12 @@ def instantiate(
     module_name, sep, attr = class_spec.rpartition(".")
     if not all((module_name, sep, attr)):
         raise ValueError(f"Invalid class_spec: {class_spec}")
+    if module_name.startswith(".") and not package:
+        raise ImportError(
+            f"Relative class specs need package=...; got class_spec={class_spec!r}"
+        )
 
-    module = _import_module(module_name, local_path)
+    module = _import_module(module_name, local_path, package)
     cls = getattr(module, attr, None)
     if cls is None or not inspect.isclass(cls):
         raise ImportError(f"{class_spec} is not a class")
@@ -83,7 +89,11 @@ def _temp_sys_path(path: Path):
             sys.path.remove(path_str)
 
 
-def _import_module(name: str, local_path: Path | None) -> ModuleType:
+def _import_module(
+    name: str,
+    local_path: Path | None,
+    package: str | None = None,
+) -> ModuleType:
     """
     Import the module with the given name. Checks sys.modules and any import aliases.
     Supports local modules imports with `local_path`.
@@ -91,35 +101,54 @@ def _import_module(name: str, local_path: Path | None) -> ModuleType:
     Args:
         name: Module name
         local_path: Optional directory path for local module discovery.
+        package: Optional package anchor for relative imports.
     """
+    resolved_name = importlib.util.resolve_name(name, package) if package else name
     if local_path:
-        local_module_path = _resolve_local_module_path(local_path, name)
+        local_module_path = _resolve_local_module_path(local_path, resolved_name)
         if local_module_path is not None:
-            parent_name, _, _ = name.rpartition(".")
-            if parent_name:
-                parent_module_path = _resolve_local_module_path(local_path, parent_name)
-                if parent_module_path is not None:
-                    _load_module_from_path(parent_name, parent_module_path)
-            return _load_module_from_path(name, local_module_path)
+            cached_module = sys.modules.get(resolved_name)
+            if cached_module is not None and not _module_matches_path(
+                cached_module, local_module_path
+            ):
+                return _load_local_module_with_parents(
+                    resolved_name, local_path, local_module_path
+                )
+            try:
+                with _temp_sys_path(local_path):
+                    module = importlib.import_module(name, package=package)
+            except ModuleNotFoundError as exc:
+                if not _missing_requested_module(exc, resolved_name):
+                    raise
+                return _load_local_module_with_parents(
+                    resolved_name, local_path, local_module_path
+                )
+            if _module_matches_path(module, local_module_path):
+                return module
+            return _load_local_module_with_parents(
+                resolved_name, local_path, local_module_path
+            )
+    if name.startswith("."):
+        return importlib.import_module(name, package=package)
     # Check for names already registered under this name (e.g. `import torch.nn`)
-    if name in sys.modules:
-        return sys.modules[name]
+    if resolved_name in sys.modules:
+        return sys.modules[resolved_name]
     # Explicitly check the stack to find aliases (e.g. `import torch.nn as nn`)
     frame = inspect.currentframe()
     try:
         while frame is not None:
             for ns in (frame.f_globals, frame.f_locals):
-                candidate = ns.get(name)
+                candidate = ns.get(resolved_name)
                 if isinstance(candidate, ModuleType):
                     return candidate
             frame = frame.f_back
     finally:
         del frame
     if not local_path:
-        return importlib.import_module(name)
+        return importlib.import_module(name, package=package)
     # Temporarily add local_path to sys.path so local modules are discoverable.
     with _temp_sys_path(local_path):
-        return importlib.import_module(name)
+        return importlib.import_module(name, package=package)
 
 
 def _resolve_local_module_path(local_path: Path, name: str) -> Path | None:
@@ -132,6 +161,40 @@ def _resolve_local_module_path(local_path: Path, name: str) -> Path | None:
     if package_init.is_file():
         return package_init
     return None
+
+
+def _module_matches_path(module: ModuleType, module_path: Path) -> bool:
+    """Return True when a loaded module came from the expected local path."""
+    module_file = getattr(module, "__file__", None)
+    if module_file is None:
+        return False
+    return Path(module_file).resolve() == module_path.resolve()
+
+
+def _missing_requested_module(exc: ModuleNotFoundError, requested_name: str) -> bool:
+    """Return True when importlib failed on the module Ember is trying to load."""
+    missing_name = exc.name
+    if missing_name is None:
+        return False
+    return (
+        requested_name == missing_name
+        or requested_name.startswith(f"{missing_name}.")
+        or missing_name.startswith(f"{requested_name}.")
+    )
+
+
+def _load_local_module_with_parents(
+    name: str,
+    local_path: Path,
+    module_path: Path,
+) -> ModuleType:
+    """Load a local module after loading any local parent packages."""
+    parent_name, _, _ = name.rpartition(".")
+    if parent_name:
+        parent_module_path = _resolve_local_module_path(local_path, parent_name)
+        if parent_module_path is not None:
+            _load_local_module_with_parents(parent_name, local_path, parent_module_path)
+    return _load_module_from_path(name, module_path)
 
 
 def _load_module_from_path(name: str, module_path: Path) -> ModuleType:

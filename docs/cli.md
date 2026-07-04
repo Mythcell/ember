@@ -55,8 +55,10 @@ The CLI passes runtime metadata through `EmberRunner.__init__()`:
 | `self.cfg` | OmegaConf config loaded from `--config`, or `None`. |
 | `self.cfg_path` | Path to the config file, if one was supplied. |
 | `self.script_dir` | Directory containing `SCRIPT_PATH`. |
+| `self.project_root` | Nearest parent containing `pyproject.toml` or `.git`, or `self.script_dir` when no marker is found. |
 | `self.verbosity` | Verbosity value from `--verbose` / `-v`. |
 
 Use `self.script_dir` when resolving local model modules, data files, or config
-neighbors. See [Runners](core/runners.md) for runner patterns and
+neighbors. Use `self.project_root` for nested local packages that should import
+from the project root. See [Runners](core/runners.md) for runner patterns and
 [Instantiation](utils/instantiation.md) for config-driven object construction.

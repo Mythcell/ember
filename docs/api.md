@@ -41,7 +41,7 @@ from ember.utils import instantiate
 | `ExponentialParamScheduler` | Exponential epoch-based parameter scheduler. |
 | `PiecewiseLinearParamScheduler` | Piecewise linear epoch-based parameter scheduler. |
 | `PiecewiseLinearLRScheduler` | Piecewise linear PyTorch learning-rate scheduler. |
-| `instantiate` | Construct trusted classes from `module.Class` strings and parameter dictionaries. |
+| `instantiate` | Construct trusted classes from `module.Class` strings and parameter dictionaries, with optional local import roots and relative import anchors. |
 
 ## Utility Modules
 

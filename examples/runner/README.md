@@ -7,8 +7,8 @@ ember run.py -c config.yaml
 ```
 
 `run.py` defines a single `EmberRunner` subclass. The CLI loads `config.yaml`
-with OmegaConf and injects `self.cfg`, `self.cfg_path`, `self.script_dir`, and
-`self.verbosity`.
+with OmegaConf and injects `self.cfg`, `self.cfg_path`, `self.script_dir`,
+`self.project_root`, and `self.verbosity`.
 
 The runner uses `self.script_dir` for local imports and data paths, so the
 example can be launched from outside the example directory.

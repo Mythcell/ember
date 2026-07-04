@@ -94,10 +94,21 @@ def main(
         raise typer.Exit(1) from exc
 
     script_dir = script_path.parent
+    project_root = imports.find_project_root(script_dir)
     try:
         runner: EmberRunner = imports.detect_runner_instance(
-            module, script_dir, cfg_path, verbosity
-        ) or imports.discover_runner_subclass(module, script_dir, cfg_path, verbosity)
+            module,
+            script_dir,
+            cfg_path,
+            verbosity,
+            project_root=project_root,
+        ) or imports.discover_runner_subclass(
+            module,
+            script_dir,
+            cfg_path,
+            verbosity,
+            project_root=project_root,
+        )
     except (TypeError, RuntimeError) as exc:
         typer.echo(f"[ember] runner discovery failed: {exc}", err=True)
         raise typer.Exit(1) from exc

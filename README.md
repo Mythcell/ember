@@ -124,133 +124,63 @@ metrics = em.evaluate(emberdata=data)
 preds = em.predict(emberdata=data)
 ```
 
-`evaluate()` returns a dictionary of metric history lists for that evaluation
-run, using validation-style keys such as `val_loss` and
-`val_MulticlassAccuracy`.
-
-`predict()` returns a list of output tensors. For this single-output classifier,
-`preds[0]` contains the concatenated logits.
+`evaluate()` returns metric history lists for that evaluation run. `predict()`
+returns a list of output tensors; for this single-output classifier, `preds[0]`
+contains the concatenated logits.
 
 ## EmberModel
 
-### Default `EmberModel`
+`EmberModel` is the main model wrapper / trainer combo. The default loop is
+deliberately narrow: it works well for conventional supervised PyTorch workloads
+with tuple-like `(input, target)` batches, a single model, and a single optimizer.
 
-`ember` was designed to be flexible enough for a wide range of PyTorch
-experiments, but the default `EmberModel` loop is deliberately narrow. Out of
-the box, it assumes a single-model, single-optimizer, supervised workflow.
+When the default assumptions stop matching the experiment, subclassing
+`EmberModel` is the intended escape hatch. Override `train_step()`,
+`val_step()`, `eval_step()`, `predict_step()`, or metric hooks to support custom
+objectives, unusual batch structures, GAN-style loops, multiple losses, and
+other research-shaped training code.
 
-The default `train_step()`, `val_step()`, and `eval_step()` assume that a batch
-is tuple-like:
-
-- `batch[0]` is the model input;
-- `batch[-1]` is the target;
-- `self.model(batch[0])` returns predictions;
-- `self.loss_fn(y_pred, batch[-1])` returns a scalar loss;
-- automated metrics can be called as `metric(y_pred, batch[-1])`.
-
-This is enough for many supervised learning workflows with `(x, y)`-style
-datasets. Single-item batches are treated as inputs and targets, which is useful
-for autoencoders or other reconstruction workflows. The default supervised
-steps require `loss_fn`; passing `loss_fn=None` is only intended for custom
-`EmberModel`s or for when you are doing manual logging.
-
-### Custom `EmberModel` (recommended)
-
-If your requirements do not neatly fit into the default batch assumptions, or
-require any of the following:
-
-- multiple optimizers;
-- handling multiple model outputs or managing submodules;
-- freezing or otherwise manipulating submodules in the train loop;
-
-then you'll likely want to override `train_step`, `val_step`, etc. directly.
-
-Subclassing `EmberModel` is the **intended** way to support custom objectives
-(e.g. contrastive learning), multi-module / multi-optimizer architectures
-(e.g. GAN), custom batch structures, and more specialized PyTorch patterns.
-
-If you want to be in full control (chances are you probably do), then this is
-the **recommended** approach.
+See the
+[EmberModel docs](https://mythcell.github.io/ember/core/embermodel/) for the
+full default-loop behavior, hook reference, checkpoint helpers, and subclassing
+guidance. For worked custom-loop patterns, see
+[Custom Loop Patterns](https://mythcell.github.io/ember/examples/custom-loops/).
 
 ## Dataloaders
 
-`EmberData` is a convenience wrapper directly inspired by Lightning's
-`LightningDataModule`:
+`EmberData` is an optional convenience wrapper inspired by Lightning's
+`LightningDataModule`. It is most useful when data setup, downloads, teardown,
+or repeated `fit()` / `evaluate()` / `predict()` calls benefit from living in
+one object:
+
 ```python
 em.fit(emberdata=data, epochs=10)
 ```
-It is most useful for self-contained data preprocessing workflows.
 
-Of course, passing `DataLoader`s directly to `.fit()`, `.evaluate()` and
-`.predict()` is fine as well:
+Passing `DataLoader`s directly is also fine, and is often enough for small
+scripts:
+
 ```python
 em.fit(train_data=train_loader, val_data=val_loader, epochs=10)
 ```
 
-When `emberdata` is supplied, it takes priority over direct dataloader arguments.
-`fit()` calls `setup(stage="fit")`, then uses `train_dataloader()` and
-`val_dataloader()`. `evaluate()` and `predict()` use their matching stages and
-dataloader methods.
-
-When using a `DataLoader` with a single-element tuple, the input is
-automatically treated as the target. For example:
-
-```python
-autoenc = MyAutoencoder()
-train_data = DataLoader(TensorDataset(images))
-# ...
-em.fit(epochs=100, train_data=train_data)
-```
-
-`ember.mnist.EmberMNIST` is a small built-in `EmberData` implementation used in
-examples. It uses the current working directory by default. Passing `root` keeps
-downloaded MNIST files in a predictable location for scripts and examples.
+See the [Data docs](https://mythcell.github.io/ember/core/data/) for the full
+`EmberData` lifecycle and direct dataloader behavior.
 
 ## CLI, Configs and Runners
 
-### CLI
-
 `ember` contains a minimal CLI that runs scripts containing an `EmberRunner`
-class. It also includes an `instantiate` utility to construct objects directly
-from type/param YAML specs, giving you a small Hydra-style workflow without the
-overhead of rigid schemas and registries.
-
-This is useful for iterative, reproducible experiments driven by an
-**optional** YAML config, e.g.:
+class. YAML configs are completely optional; a runner can be a plain trusted
+Python entrypoint:
 
 ```bash
-ember run.py -c config.yaml
+ember path/to/run.py
+ember path/to/run.py -c config.yaml
 ```
 
-> [!WARNING]
-> `EmberRunner` scripts and config-driven object instantiation can execute
-> arbitrary Python code. The CLI imports the runner module, and specs passed to
-> `instantiate()` import modules and call constructors. Only run scripts and
-> configs that you trust.
-
-### Minimal Runner
-
-An `EmberRunner` is just a class with a `run()` method. The CLI loads the config
-with OmegaConf and injects `self.cfg`, `self.cfg_path`, `self.script_dir` and
-`self.verbosity`.
-
-```python
-# run.py
-from ember import EmberRunner
-
-class MyRunner(EmberRunner):
-    def run(self) -> None:
-        print(self.cfg.batch_size)
-```
-
-Runner scripts can be discovered in two ways: define a single `EmberRunner`
-subclass, or export a module-level `runner = MyRunner()` when you want explicit
-construction.
-
-### Configs
-
-Configs are plain YAML and are entirely **optional**. There is no set schema or
-format: the CLI injects `self.cfg` directly to your runner class.
+When you do use a config, it is plain YAML and intentionally schema-light. If
+you want a compact Hydra-style workflow, `ember.utils.instantiate()` can
+construct trusted classes from `module.Class` specs and parameter dictionaries:
 
 ```yaml
 model:
@@ -259,12 +189,6 @@ model:
     channels: 32
     num_classes: 10
 ```
-
-### Hydra-style Object Instantiation
-
-`ember.utils.instantiate()` supports simple Hydra-style object instantiation
-from a string module spec and parameter dictionary, and can also resolve local
-imports. Let's see how we can initialize a model using the above YAML config:
 
 ```python
 # run.py
@@ -277,106 +201,42 @@ from ember.utils import instantiate
 class MyRunner(EmberRunner):
     def run(self) -> None:
         model = instantiate(
-            self.cfg.model.type,  # models.MyCNN
-            params=self.cfg.model.params,  # {channels: 32, num_classes: 10}
-            local_path=self.script_dir,  # where to find models.py
-            expected_type=nn.Module,  # optional type validation, raises TypeError
+            self.cfg.model.type,
+            params=self.cfg.model.params,
+            local_path=self.script_dir,
+            expected_type=nn.Module,
         )
 ```
-this will work assuming `run.py`, `models.py` and `config.yaml` are in the same file.
 
-### More on import resolution
+> [!WARNING]
+> `EmberRunner` scripts and config-driven object instantiation can execute
+> arbitrary Python code. The CLI imports the runner module, and specs passed to
+> `instantiate()` import modules and call constructors. Only run scripts and
+> configs that you trust.
 
-`ember`'s `instantiate()` is essentially a wrapper for `importlib` with a
-slightly more strict resolution order. In particular, when `local_path` is
-provided, `instantiate()` first checks for local files relative to that path:
-
-- `models.MyCNN` can resolve to `models.py`;
-- `package.Model` can resolve to `package/__init__.py`;
-- nested local packages are supported when matching files exist.
-
-Runner scripts should therefore pass `self.script_dir` as you'll probably put
-your script next to your model files. If `instantiate()` doesn't find anything,
-it temporarily adds `local_path` to `sys.path` and falls back to normal
-`importlib.import_module()` behavior. Alternatively, you can import the relevant
-package or module into the namespace, i.e. `import models`, then use
-`models.MyCNN`.
-
-`instantiate()` requires a dotted `"module.Class"` string specification. The
-importer also checks `sys.modules` and the active call stack for module aliases:
-
-```python
-import torch.nn as nn
-
-from ember.utils import instantiate
-
-activation = instantiate("nn.ReLU")  # equivalent to nn.ReLU()
-```
+See the [CLI docs](https://mythcell.github.io/ember/cli/) for command syntax,
+[Runners](https://mythcell.github.io/ember/core/runners/) for runner patterns,
+and [Instantiation](https://mythcell.github.io/ember/utils/instantiation/) for
+local import roots, relative specs, aliases, and type guards.
 
 ## TorchMetrics and Logging
 
-You can define TorchMetrics metrics when creating an `EmberModel`. In the MNIST
-example from before, supplying this metric:
+You can pass TorchMetrics metrics when creating an `EmberModel`:
+
 ```python
 em = EmberModel(
     # ...
     metrics=[Accuracy(task="multiclass", num_classes=10)],
 )
 ```
-automatically registers `"train_MulticlassAccuracy"` and
-`"val_MulticlassAccuracy"` keys in the `EmberTracker` logger (more generally,
-`metric._get_name()`).
 
-### Automatic metric calculation
+The automatic path is deliberately simple: metrics are called once per batch and
+logged through `EmberTracker` as batch-size-weighted means. For true epoch-level
+TorchMetrics semantics, or for metrics with nonstandard call signatures, own the
+metric updates in a custom `EmberModel` subclass.
 
-`train_step` and `val_step` support automatic TorchMetrics metric calculation
-and logging whenever you return a tuple `(loss, y_pred)`.
-
-```python
-def train_step(
-    self, batch, batch_idx: int, epoch: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    x, y = batch[0], batch[-1]
-    (opt, *_) = self.optimizers
-    y_pred = self.model(x)
-    loss = self.loss_fn(y_pred, y)
-    self.fabric.backward(loss)
-    opt.step()
-    opt.zero_grad()
-    return loss, y_pred
-```
-
-The automatic path is deliberately simple: the default loop calls
-`metric(y_pred, batch[-1])` once per batch and sends the returned batch value to
-`EmberTracker`. The tracker stores and logs a batch-size-weighted mean of those
-batch values. If you are using a TorchMetrics metric with a different call
-signature, override `calculate_metric` in a subclass.
-
-Note the automatic metric path does not call TorchMetrics `.compute()` or
-`.reset()`. For true epoch-level metrics, you can calculate metrics manually:
-
-### Custom metric logging
-
-For custom `EmberModel` classes, it is often best to register and update
-metrics manually with the built-in `EmberTracker`. Return `None` from your step
-method when you own the metric updates yourself:
-
-```python
-class CustomModel(EmberModel):
-    def setup_tracker(self) -> None:
-        self.tracker.register(["loss_a", "loss_b", "my_metric"], key_type="train")
-
-    def train_step(self, batch, batch_idx: int, epoch: int) -> None:
-        # ...
-        loss_a = some_loss_fn(y_pred, y)
-        loss_b = some_other_loss_fn(y_pred, y)
-        my_metric = calculate_my_metric(y_pred, y)
-        self.tracker.update("loss_a", loss_a.detach(), batch_size=batch_size)
-        self.tracker.update("loss_b", loss_b.detach(), batch_size=batch_size)
-        self.tracker.update("my_metric", my_metric.detach(), batch_size=batch_size)
-
-        # no need to return (loss, y_pred)
-```
+See [Tracking](https://mythcell.github.io/ember/core/tracking/) for metric
+history, Fabric logging, and manual metric patterns.
 
 ## Caveats and Limitations
 

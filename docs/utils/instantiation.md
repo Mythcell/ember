@@ -113,17 +113,43 @@ lifetimes and dependency injection clear in experiment scripts.
 
 ## Local Module Resolution
 
-When `local_path` is provided, `instantiate()` first checks for local files
-relative to that path:
+When `local_path` is provided, `instantiate()` temporarily treats that directory
+as an import root and can resolve local files relative to that path:
 
 - `models.SmallCNN` can resolve to `models.py`;
 - `package.Model` can resolve to `package/__init__.py`;
 - nested local packages are supported when matching files exist.
 
-This is why runner scripts usually pass `self.script_dir`.
+Flat runner scripts usually pass `self.script_dir` when model files live next to
+the runner. Nested package projects should pass `self.project_root` and use a
+fully qualified local spec:
 
-If no local file matches, Ember temporarily adds `local_path` to `sys.path` and
-falls back to normal `importlib.import_module()` behavior.
+```python
+data = instantiate(
+    "my_project.data.TrainingData",
+    local_path=self.project_root,
+)
+```
+
+If a matching local module is already cached from another location, an explicit
+`local_path` still wins so repeated experiments can resolve the requested local
+file.
+
+## Relative Specs
+
+Relative specs need an explicit package anchor, just like Python relative
+imports:
+
+```python
+data = instantiate(
+    "..data.TrainingData",
+    local_path=self.project_root,
+    package="my_project.runners",
+)
+```
+
+Without `package=...`, relative specs raise `ImportError` with a message
+explaining that a package anchor is required.
 
 ## Type Guards
 
