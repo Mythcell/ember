@@ -1,0 +1,14 @@
+model_type: models.SmallCNN
+model_params: {}
+loss_fn: nn.CrossEntropyLoss
+metric_type: torchmetrics.Accuracy
+metric_params:
+  task: multiclass
+  num_classes: 10
+batch_size: 64
+lr: 0.001
+accelerator: auto
+epochs: 5
+model_checkpoint_params:
+  monitor: val_MulticlassAccuracy
+  mode: max
