@@ -1,3 +1,9 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ember.models import EmberModel
+    from ember.run import EmberRunner
+
 try:
     from ember._version import __version__
 except ImportError:

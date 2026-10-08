@@ -243,18 +243,19 @@ def test_fit_requires_an_epoch_or_step_target(
 
 def test_fit_flushes_partial_gradient_accumulation() -> None:
     cases = [
-        ({"epochs": 1}, 3),
-        ({"steps": 3}, 5),
+        (1, None, 3),
+        (None, 3, 5),
     ]
 
-    for fit_target, num_samples in cases:
+    for epochs, steps, num_samples in cases:
         model, optimizer = make_counting_model()
         model.fit(
             train_data=make_loader(num_samples),
+            epochs=epochs,
+            steps=steps,
             accumulate_grad_batches=2,
             show_metrics=False,
             show_progress_bar=False,
-            **fit_target,
         )
 
         assert optimizer.step_calls == 2
@@ -366,7 +367,9 @@ def test_evaluate_and_predict_use_synthetic_data(
     assert metrics["val_loss"][0] > 0
     assert 0 <= metrics["val_MulticlassAccuracy"][0] <= 1
     assert len(predictions) == 1
-    assert predictions[0].shape == (6, 2)
+    prediction = predictions[0]
+    assert isinstance(prediction, torch.Tensor)
+    assert prediction.shape == (6, 2)
 
 
 class MultiOutputModel(nn.Module):
@@ -395,11 +398,14 @@ def test_predict_concatenates_multiple_outputs(model_factory: ModelFactory) -> N
 
     dataset = data.dataset
     assert isinstance(dataset, TensorDataset)
-    assert len(predictions) == 3
-    assert predictions[0].shape == (4, 4)
-    assert torch.equal(predictions[0].cpu(), dataset.tensors[0])
-    assert torch.equal(predictions[1], predictions[0] + 1)
-    assert torch.equal(predictions[2], predictions[0].sum(dim=1, keepdim=True))
+    first, second, third = predictions
+    assert isinstance(first, torch.Tensor)
+    assert isinstance(second, torch.Tensor)
+    assert isinstance(third, torch.Tensor)
+    assert first.shape == (4, 4)
+    assert torch.equal(first.cpu(), dataset.tensors[0])
+    assert torch.equal(second, first + 1)
+    assert torch.equal(third, first.sum(dim=1, keepdim=True))
 
 
 class CustomEvalTrackerModel(EmberModel):
@@ -472,6 +478,7 @@ class FourStepModel(EmberModel):
 
 def test_subclasses_can_override_all_model_steps(model_factory: ModelFactory) -> None:
     model = model_factory(model_class=FourStepModel, metrics=False)
+    assert isinstance(model, FourStepModel)
     data = make_loader(2, batch_size=1)
 
     model.fit(
@@ -541,13 +548,13 @@ def test_weight_round_trip_and_freezing(
     fitted_model.unfreeze()
     assert all(parameter.requires_grad for parameter in fitted_model.model.parameters())
 
-    layered_model = model_factory(model=LayeredClassifier())
+    layered_module = LayeredClassifier()
+    layered_model = model_factory(model=layered_module)
     layered_model.freeze(layer_names=["_forward_module.hidden"])
-    hidden_parameters = list(layered_model.model.module.hidden.parameters())
+    hidden_parameters = list(layered_module.hidden.parameters())
     assert all(not parameter.requires_grad for parameter in hidden_parameters)
     assert all(
-        parameter.requires_grad
-        for parameter in layered_model.model.module.output.parameters()
+        parameter.requires_grad for parameter in layered_module.output.parameters()
     )
     layered_model.unfreeze(layer_names=["_forward_module.hidden"])
     assert all(parameter.requires_grad for parameter in hidden_parameters)

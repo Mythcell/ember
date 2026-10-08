@@ -25,7 +25,7 @@ def detect_runner_instance(
     script_dir: Path,
     cfg_path: Path | None = None,
     verbosity: int = 0,
-) -> EmberRunner | None:
+) -> EmberRunner[object] | None:
     candidate = getattr(module, "runner", None)
     if candidate is None:
         return None
@@ -35,7 +35,7 @@ def detect_runner_instance(
     # auto-inject CLI args that the user may not have known at construction time
     if candidate.cfg is None:
         candidate.cfg_path = cfg_path
-        candidate.cfg = OmegaConf.load(cfg_path) if cfg_path else None
+        candidate.cfg = OmegaConf.load(cfg_path) if cfg_path is not None else None
     if candidate.script_dir is None:
         candidate.script_dir = script_dir
     candidate.verbosity = verbosity
@@ -47,7 +47,7 @@ def discover_runner_subclass(
     script_dir: Path,
     cfg_path: Path | None = None,
     verbosity: int = 0,
-) -> EmberRunner:
+) -> EmberRunner[object]:
     subclasses = [
         obj
         for obj in module.__dict__.values()
@@ -60,5 +60,5 @@ def discover_runner_subclass(
         raise RuntimeError("No Runner subclass found (and no runner provided)")
     if len(subclasses) > 1:
         raise RuntimeError("Multiple Runner subclasses found; please expose `runner`")
-    runner_cls: type[EmberRunner] = subclasses[0]
+    runner_cls: type[EmberRunner[object]] = subclasses[0]
     return runner_cls(cfg_path=cfg_path, script_dir=script_dir, verbosity=verbosity)

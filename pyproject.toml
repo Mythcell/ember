@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ember"
 dynamic = ["version"]
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.13,<3.14"
 description = "A lightweight Fabric-based training library for PyTorch"
 readme = "README.md"
 license = { file = "LICENSE.md" }

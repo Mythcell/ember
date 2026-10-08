@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING, cast
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +8,9 @@ from torchvision.transforms import v2
 
 from ember import EmberModel, EmberRunner
 from ember.mnist import EmberMNIST
+
+if TYPE_CHECKING:
+    from lightning.fabric.wrappers import _FabricModule
 
 
 class Encoder(nn.Module):
@@ -99,7 +104,7 @@ class VAEModel(EmberModel):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x = batch[0]
         x_recon, z_mean, z_log_var = self.model(x)
-        loss = self.loss_fn(x_recon, x, z_mean, z_log_var)
+        loss = cast(nn.Module, self.loss_fn)(x_recon, x, z_mean, z_log_var)
         return loss, x_recon
 
     def train_step(
@@ -108,7 +113,9 @@ class VAEModel(EmberModel):
         (optimizer, *_) = self.optimizers
         is_accumulating = (batch_idx + 1) % self.accumulate_grad_batches != 0
 
-        with self.fabric.no_backward_sync(self.model, enabled=is_accumulating):
+        with self.fabric.no_backward_sync(
+            cast("_FabricModule", self.model), enabled=is_accumulating
+        ):
             loss, x_recon = self._step(batch)
             self.fabric.backward(loss / self.accumulate_grad_batches)
 
@@ -140,6 +147,9 @@ class VAEModel(EmberModel):
 
 class MNISTVAERunner(EmberRunner):
     def run(self) -> None:
+        assert self.cfg is not None
+        assert self.script_dir is not None
+
         transform = v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
         data = EmberMNIST(
             transform=transform,
@@ -165,9 +175,12 @@ class MNISTVAERunner(EmberRunner):
         )
 
         metrics = embermodel.evaluate(emberdata=data)
-        reconstructions, z_mean, z_log_var = embermodel.predict(
-            emberdata=data,
-            show_progress_bar=False,
+        reconstructions, z_mean, z_log_var = cast(
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+            embermodel.predict(
+                emberdata=data,
+                show_progress_bar=False,
+            ),
         )
         print(metrics)
         print(reconstructions.shape, z_mean.shape, z_log_var.shape)

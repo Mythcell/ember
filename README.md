@@ -27,7 +27,7 @@ cd ember
 uv sync
 ```
 
-Note that Ember currently supports Python 3.12 and 3.13
+Ember currently requires Python 3.13.
 
 ## Quick Example
 

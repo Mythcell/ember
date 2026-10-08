@@ -60,6 +60,24 @@ if loaded:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_importing_emberrunner_does_not_import_torch() -> None:
+    result = run_isolated_import(
+        """
+import sys
+from ember import EmberRunner
+loaded = [
+    name
+    for name in sys.modules
+    if name == "torch" or name.startswith("torch.")
+]
+if loaded:
+    raise SystemExit(f"torch modules loaded: {loaded[:5]}")
+"""
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_importing_embermodel_does_not_import_torchinfo() -> None:
     result = run_isolated_import(
         """

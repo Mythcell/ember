@@ -74,7 +74,7 @@ def model_factory() -> ModelFactory:
         module = model if model is not None else TinyClassifier()
         fabric = Fabric(devices=1, accelerator="auto")
         optimizer = torch.optim.Adam(module.parameters(), lr=1e-2)
-        schedulers = (
+        schedulers: list[torch.optim.lr_scheduler.LRScheduler] | None = (
             [
                 torch.optim.lr_scheduler.ReduceLROnPlateau(
                     optimizer,

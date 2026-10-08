@@ -95,7 +95,7 @@ def main(
 
     script_dir = script_path.parent
     try:
-        runner: EmberRunner = imports.detect_runner_instance(
+        runner: EmberRunner[object] = imports.detect_runner_instance(
             module, script_dir, cfg_path, verbosity
         ) or imports.discover_runner_subclass(module, script_dir, cfg_path, verbosity)
     except (TypeError, RuntimeError) as exc:

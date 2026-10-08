@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torchmetrics
 from lightning import Fabric
-from torch.optim import Adam
+from torch.optim import Adam, Optimizer
 
 from ember import EmberModel, EmberRunner
 from ember.callbacks import ModelCheckpoint
@@ -11,6 +11,9 @@ from ember.utils import instantiate
 
 class MyRunner(EmberRunner):
     def run(self) -> None:
+        assert self.cfg is not None
+        assert self.script_dir is not None
+
         model: nn.Module = instantiate(
             self.cfg.model_type,
             params=self.cfg.model_params,
@@ -32,7 +35,7 @@ class MyRunner(EmberRunner):
         )
         fabric = Fabric(accelerator=self.cfg.accelerator)
 
-        optimizers = [Adam(params=model.parameters(), lr=self.cfg.lr)]
+        optimizers: list[Optimizer] = [Adam(params=model.parameters(), lr=self.cfg.lr)]
         em = EmberModel(
             fabric=fabric,
             model=model,

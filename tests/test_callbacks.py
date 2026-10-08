@@ -308,7 +308,7 @@ def test_validation_callbacks_are_safe_when_validation_is_disabled(
 ) -> None:
     model = model_factory(no_validation=True, metrics=False, scheduler=False)
     recording_callback = RecordingCallback()
-    callbacks = [
+    callbacks: list[EmberCallback] = [
         recording_callback,
         EarlyStopping(monitor="val_loss", patience=1),
         ModelCheckpoint(
@@ -435,6 +435,7 @@ def test_checkpoint_restores_model_optimizer_scheduler_and_history(
         for key, value in fitted_model.model.state_dict().items()
     }
     optimizer_before = copy.deepcopy(fitted_model.optimizers[0].state_dict())
+    assert fitted_model.schedulers is not None
     scheduler_before = copy.deepcopy(fitted_model.schedulers[0].state_dict())
     history_before = copy.deepcopy(fitted_model.history)
     fitted_model.save_checkpoint(checkpoint_path)
@@ -455,6 +456,7 @@ def test_checkpoint_restores_model_optimizer_scheduler_and_history(
             else:
                 assert value_before == value_after
 
+    assert restored_model.schedulers is not None
     assert scheduler_before == restored_model.schedulers[0].state_dict()
     assert restored_model.history == history_before
     assert restored_model.resuming

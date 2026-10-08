@@ -1,10 +1,30 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, assert_type
 
 import pytest
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from typer.testing import CliRunner
 
+from ember import EmberRunner
 from ember.cli import app
+
+if TYPE_CHECKING:
+    from ember import EmberModel
+    from ember.models import EmberModel as DirectEmberModel
+
+    def check_model_result(runner: EmberRunner[EmberModel]) -> None:
+        assert_type(runner.run(), DirectEmberModel)
+
+
+class NoResultRunner(EmberRunner):
+    def run(self) -> None:
+        pass
+
+
+class ConfigRunner(EmberRunner[DictConfig | ListConfig | None]):
+    def run(self) -> DictConfig | ListConfig | None:
+        return self.cfg
 
 
 @dataclass(frozen=True)
@@ -28,9 +48,10 @@ def runner_files(tmp_path: Path) -> RunnerFiles:
         """
 from ember import EmberRunner
 
-class MyRunner(EmberRunner):
-    def run(self):
+class MyRunner(EmberRunner[int]):
+    def run(self) -> int:
         print(self.cfg.var)
+        return 7
 """.strip()
     )
     run_instance = tmp_path / "run_instance.py"
@@ -122,6 +143,73 @@ model_params:
     )
 
 
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        OmegaConf.create({}),
+        OmegaConf.create({"value": 1}),
+        OmegaConf.create([]),
+        OmegaConf.create([1]),
+    ],
+    ids=["empty_dict", "dict", "empty_list", "list"],
+)
+def test_in_memory_config_is_shared(cfg: DictConfig | ListConfig) -> None:
+    runner = ConfigRunner(cfg=cfg)
+
+    assert runner.cfg is cfg
+    assert runner.cfg_path is None
+    assert runner.run() is cfg
+
+    if isinstance(cfg, DictConfig):
+        assert isinstance(runner.cfg, DictConfig)
+        cfg["value"] = 2
+        assert runner.cfg["value"] == 2
+        runner.cfg["value"] = 3
+        assert cfg["value"] == 3
+    else:
+        cfg.append(2)
+        assert runner.cfg[-1] == 2
+        runner.cfg[-1] = 3
+        assert cfg[-1] == 3
+
+
+def test_runner_loads_config_with_positional_metadata(
+    runner_files: RunnerFiles,
+) -> None:
+    runner = ConfigRunner(runner_files.config, runner_files.run.parent, 2)
+
+    assert runner.cfg_path == runner_files.config
+    assert runner.script_dir == runner_files.run.parent
+    assert runner.verbosity == 2
+    assert isinstance(runner.cfg, DictConfig)
+    assert runner.cfg.var == "test"
+
+
+def test_runner_without_config_returns_none() -> None:
+    runner = ConfigRunner()
+
+    assert runner.cfg is None
+    assert runner.cfg_path is None
+    assert runner.run() is None
+
+
+@pytest.mark.parametrize("cfg", [OmegaConf.create({}), OmegaConf.create([])])
+def test_conflicting_config_sources_fail_before_loading(
+    tmp_path: Path, cfg: DictConfig | ListConfig
+) -> None:
+    with pytest.raises(ValueError, match="Supply either cfg or cfg_path"):
+        ConfigRunner(cfg_path=tmp_path / "missing.yaml", cfg=cfg)
+
+
+def test_runner_result_types() -> None:
+    assert_type(NoResultRunner().run(), None)
+    assert_type(ConfigRunner().run(), DictConfig | ListConfig | None)
+
+    runners: list[EmberRunner[object]] = [NoResultRunner(), ConfigRunner()]
+    for runner in runners:
+        assert_type(runner.run(), object)
+
+
 @pytest.mark.parametrize("runner_attribute", ["run", "run_instance"])
 def test_cli_runs_discovered_runner_variants(
     cli_runner: CliRunner,
@@ -139,6 +227,41 @@ def test_cli_runs_discovered_runner_variants(
 
     assert result.exit_code == 0
     assert "test" in result.stdout
+
+
+@pytest.mark.parametrize("config_source", ["{}", "{'var': 'in-memory'}", "[]", "[1]"])
+def test_cli_preserves_exported_in_memory_config(
+    cli_runner: CliRunner,
+    runner_files: RunnerFiles,
+    config_source: str,
+) -> None:
+    script = runner_files.run.parent / "configured_runner.py"
+    script.write_text(
+        f"""
+from pathlib import Path
+from omegaconf import OmegaConf
+from ember import EmberRunner
+
+cfg = OmegaConf.create({config_source})
+
+class ConfiguredRunner(EmberRunner[int]):
+    def run(self) -> int:
+        assert self.cfg is cfg
+        assert self.cfg_path is None
+        assert self.script_dir == Path(__file__).parent
+        assert self.verbosity == 2
+        return 7
+
+runner = ConfiguredRunner(cfg=cfg)
+""".strip()
+    )
+
+    result = cli_runner.invoke(
+        app, [str(script), "-c", str(runner_files.config), "-vv"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
 
 
 def test_cli_runner_instantiates_local_objects(
