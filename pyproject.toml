@@ -10,7 +10,7 @@ description = "A lightweight Fabric-based training library for PyTorch"
 readme = "README.md"
 license = { file = "LICENSE.md" }
 dependencies = [
-    "lightning==2.6.5",
+    "lightning==2.6.6",
     "numpy>=2.4.6",
     "omegaconf>=2.3.1",
     "optuna>=4.9.0",
@@ -57,7 +57,7 @@ only-include = [
 [tool.uv]
 exclude-newer = "P8D"
 constraint-dependencies = [
-    "pytorch-lightning==2.6.5",
+    "pytorch-lightning==2.6.6",
 ]
 
 [tool.ruff]
