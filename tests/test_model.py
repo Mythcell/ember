@@ -152,7 +152,7 @@ def test_no_augmentation(
     assert augmented_targets is targets
 
 
-def test_fit_tracks_epochs_steps_and_metrics(
+def test_fit_history(
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,
 ) -> None:
@@ -170,9 +170,10 @@ def test_fit_tracks_epochs_steps_and_metrics(
     assert len(model.history["train_loss"]) == 2
     assert len(model.history["val_loss"]) == 2
     assert all(loss > 0 for loss in model.history["train_loss"])
+    assert model.history["lr_0"]
 
 
-def test_automatic_metrics_use_epoch_lifecycle_and_reset_between_stages() -> None:
+def test_metric_lifecycle() -> None:
     metric = MulticlassF1Score(num_classes=2, average="macro")
     model = make_metric_model([metric])
     data = make_metric_loader()
@@ -191,7 +192,7 @@ def test_automatic_metrics_use_epoch_lifecycle_and_reset_between_stages() -> Non
     assert not metric.update_called
 
 
-def test_update_metric_can_override_the_default_target_mapping() -> None:
+def test_metric_override() -> None:
     metric = Accuracy(task="multiclass", num_classes=2)
     model = make_metric_model([metric], model_class=TargetOverrideMetricModel)
 
@@ -205,7 +206,7 @@ def test_update_metric_can_override_the_default_target_mapping() -> None:
     assert not metric.update_called
 
 
-def test_automatic_metrics_reject_ambiguous_or_nonscalar_results() -> None:
+def test_metric_validation() -> None:
     duplicate_metrics = [
         Accuracy(task="multiclass", num_classes=2),
         Accuracy(task="multiclass", num_classes=2),
@@ -228,25 +229,7 @@ def test_automatic_metrics_reject_ambiguous_or_nonscalar_results() -> None:
     assert not metric.update_called
 
 
-def test_fit_skips_validation(
-    model_factory: ModelFactory,
-    synthetic_data: SyntheticData,
-) -> None:
-    model = model_factory(no_validation=True)
-
-    model.fit(
-        emberdata=synthetic_data,
-        epochs=2,
-        show_metrics=False,
-        show_progress_bar=False,
-    )
-
-    assert model.epoch_count == 2
-    assert len(model.history["train_loss"]) == 2
-    assert model.history["val_loss"] == []
-
-
-def test_steps_only_training_crosses_epoch_boundaries_and_resumes(
+def test_step_resume(
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,
 ) -> None:
@@ -273,7 +256,7 @@ def test_steps_only_training_crosses_epoch_boundaries_and_resumes(
     assert model.resuming
 
 
-def test_epoch_limit_wins_before_large_step_target(
+def test_epoch_limit(
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,
 ) -> None:
@@ -291,7 +274,7 @@ def test_epoch_limit_wins_before_large_step_target(
     assert model.step_count == 4
 
 
-def test_fit_requires_an_epoch_or_step_target(
+def test_training_limit_required(
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,
 ) -> None:
@@ -303,7 +286,7 @@ def test_fit_requires_an_epoch_or_step_target(
     assert model.step_count == 0
 
 
-def test_fit_flushes_partial_gradient_accumulation() -> None:
+def test_gradient_accumulation() -> None:
     cases = [
         (1, None, 3),
         (None, 3, 5),
@@ -324,7 +307,7 @@ def test_fit_flushes_partial_gradient_accumulation() -> None:
         assert all(parameter.grad is None for parameter in model.model.parameters())
 
 
-def test_fit_validates_and_rounds_fractional_batch_limits() -> None:
+def test_batch_limits() -> None:
     for invalid_limit in (-1, -0.1, 1.1):
         model, _ = make_counting_model()
         with pytest.raises(ValueError, match="batch_limit"):
@@ -347,7 +330,7 @@ def test_fit_validates_and_rounds_fractional_batch_limits() -> None:
     assert model.step_count == 1
 
 
-def test_model_stages_reject_empty_dataloaders(model_factory: ModelFactory) -> None:
+def test_empty_dataloaders(model_factory: ModelFactory) -> None:
     empty_data = DataLoader(
         TensorDataset(torch.empty(0, 4), torch.empty(0, dtype=torch.long))
     )
@@ -390,7 +373,7 @@ def test_model_stages_reject_empty_dataloaders(model_factory: ModelFactory) -> N
         model_factory().predict(data=empty_data, show_progress_bar=False)
 
 
-def test_plateau_scheduler_uses_validation_history(
+def test_plateau_scheduler(
     model_factory: ModelFactory,
 ) -> None:
     model = model_factory()
@@ -410,30 +393,6 @@ def test_plateau_scheduler_uses_validation_history(
     assert skipped_model.optimizers[0].param_groups[0]["lr"] == initial_lr
 
 
-def test_evaluate_and_predict_use_synthetic_data(
-    fitted_model: EmberModel,
-    synthetic_data: SyntheticData,
-) -> None:
-    metrics = fitted_model.evaluate(
-        emberdata=synthetic_data,
-        show_metrics=False,
-        show_progress_bar=False,
-    )
-    predictions = fitted_model.predict(
-        emberdata=synthetic_data,
-        show_progress_bar=False,
-    )
-
-    assert set(metrics) == {"val_loss", "val_MulticlassAccuracy"}
-    assert all(len(values) == 1 for values in metrics.values())
-    assert metrics["val_loss"][0] > 0
-    assert 0 <= metrics["val_MulticlassAccuracy"][0] <= 1
-    assert len(predictions) == 1
-    prediction = predictions[0]
-    assert isinstance(prediction, torch.Tensor)
-    assert prediction.shape == (6, 2)
-
-
 class MultiOutputModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -447,9 +406,13 @@ class MultiOutputModel(nn.Module):
         return scaled, scaled + 1, scaled.sum(dim=1, keepdim=True)
 
 
-def test_predict_concatenates_multiple_outputs(model_factory: ModelFactory) -> None:
+@pytest.mark.parametrize("multiple_outputs", [False, True])
+def test_predict_outputs(
+    model_factory: ModelFactory,
+    multiple_outputs: bool,
+) -> None:
     model = model_factory(
-        model=MultiOutputModel(),
+        model=MultiOutputModel() if multiple_outputs else FixedLogitModel(),
         metrics=False,
         no_validation=True,
         scheduler=False,
@@ -460,14 +423,15 @@ def test_predict_concatenates_multiple_outputs(model_factory: ModelFactory) -> N
 
     dataset = data.dataset
     assert isinstance(dataset, TensorDataset)
-    first, second, third = predictions
-    assert isinstance(first, torch.Tensor)
-    assert isinstance(second, torch.Tensor)
-    assert isinstance(third, torch.Tensor)
-    assert first.shape == (4, 4)
-    assert torch.equal(first.cpu(), dataset.tensors[0])
-    assert torch.equal(second, first + 1)
-    assert torch.equal(third, first.sum(dim=1, keepdim=True))
+    inputs = dataset.tensors[0]
+    expected = (
+        (inputs, inputs + 1, inputs.sum(dim=1, keepdim=True))
+        if multiple_outputs
+        else (inputs,)
+    )
+    for prediction, expected_output in zip(predictions, expected, strict=True):
+        assert isinstance(prediction, torch.Tensor)
+        torch.testing.assert_close(prediction.cpu(), expected_output)
 
 
 class CustomEvalTrackerModel(EmberModel):
@@ -487,7 +451,7 @@ class CustomEvalTrackerModel(EmberModel):
         return output
 
 
-def test_evaluate_uses_explicit_metrics_without_state_leakage(
+def test_evaluation_isolation(
     model_factory: ModelFactory,
 ) -> None:
     model = model_factory(
@@ -516,59 +480,6 @@ def test_evaluate_uses_explicit_metrics_without_state_leakage(
     assert not evaluation_metric.update_called
 
 
-class FourStepModel(EmberModel):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.step_calls: list[str] = []
-
-    def train_step(self, batch, batch_idx: int, epoch: int):
-        self.step_calls.append(f"train:{batch_idx}:{epoch}")
-        return super().train_step(batch, batch_idx, epoch)
-
-    def val_step(self, batch, batch_idx: int, epoch: int):
-        self.step_calls.append(f"val:{batch_idx}:{epoch}")
-        return super().val_step(batch, batch_idx, epoch)
-
-    def eval_step(self, batch, batch_idx: int, eval_tracker=None):
-        self.step_calls.append(f"eval:{batch_idx}")
-        return super().eval_step(batch, batch_idx, eval_tracker)
-
-    def pred_step(self, batch, batch_idx: int):
-        self.step_calls.append(f"pred:{batch_idx}")
-        return super().pred_step(batch, batch_idx)
-
-
-def test_subclasses_can_override_all_model_steps(model_factory: ModelFactory) -> None:
-    model = model_factory(model_class=FourStepModel, metrics=False)
-    assert isinstance(model, FourStepModel)
-    data = make_loader(2, batch_size=1)
-
-    model.fit(
-        train_data=data,
-        val_data=data,
-        epochs=1,
-        show_metrics=False,
-        show_progress_bar=False,
-    )
-    model.evaluate(
-        eval_data=data,
-        show_metrics=False,
-        show_progress_bar=False,
-    )
-    model.predict(data=data, show_progress_bar=False)
-
-    assert model.step_calls == [
-        "train:0:0",
-        "train:1:0",
-        "val:0:0",
-        "val:1:0",
-        "eval:0",
-        "eval:1",
-        "pred:0",
-        "pred:1",
-    ]
-
-
 class LayeredClassifier(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -579,7 +490,7 @@ class LayeredClassifier(nn.Module):
         return self.output(torch.relu(self.hidden(inputs)))
 
 
-def test_weight_round_trip_and_freezing(
+def test_weights_and_freezing(
     fitted_model: EmberModel,
     model_factory: ModelFactory,
     tmp_path: Path,

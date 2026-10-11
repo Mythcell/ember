@@ -46,7 +46,7 @@ def fake_mnist(monkeypatch: pytest.MonkeyPatch) -> type[FakeMNIST]:
     return FakeMNIST
 
 
-def test_embermnist_pre_setup_uses_configured_root_without_io(
+def test_mnist_downloads(
     fake_mnist: type[FakeMNIST],
     tmp_path: Path,
 ) -> None:
@@ -60,7 +60,7 @@ def test_embermnist_pre_setup_uses_configured_root_without_io(
     ]
 
 
-def test_embermnist_builds_all_stage_dataloaders_from_fake_data(
+def test_mnist_dataloaders(
     fake_mnist: type[FakeMNIST],
     tmp_path: Path,
 ) -> None:
@@ -92,7 +92,7 @@ def test_embermnist_builds_all_stage_dataloaders_from_fake_data(
     ]
 
 
-def test_embermnist_can_disable_validation() -> None:
+def test_mnist_no_validation() -> None:
     assert EmberMNIST(no_val=True).val_dataloader() is None
     assert EmberMNIST(val_fraction=0).val_dataloader() is None
 
@@ -145,7 +145,7 @@ class FailingPredictModel(EmberModel):
         raise RuntimeError("pred failed")
 
 
-def test_emberdata_cleanup_runs_after_each_successful_stage(
+def test_data_cleanup(
     model_factory: ModelFactory,
 ) -> None:
     data = CleanupData()
@@ -185,7 +185,7 @@ def run_failing_stage(model: EmberModel, data: CleanupData, stage: str) -> None:
         model.predict(emberdata=data, show_progress_bar=False)
 
 
-def test_emberdata_cleanup_runs_when_model_stages_fail(
+def test_data_cleanup_on_error(
     model_factory: ModelFactory,
 ) -> None:
     cases = [
@@ -208,7 +208,7 @@ def test_emberdata_cleanup_runs_when_model_stages_fail(
         assert data.cleanup_stages == [expected_stage]
 
 
-def test_cleanup_exception_precedence(model_factory: ModelFactory) -> None:
+def test_cleanup_error_precedence(model_factory: ModelFactory) -> None:
     failing_stage_data = FailingCleanupData()
     failing_model = model_factory(
         model_class=FailingTrainModel,
@@ -249,7 +249,7 @@ class LifecycleData(EmberData):
         self.setup_calls.append(stage)
 
 
-def test_emberdata_setup_runs_once_per_stage_until_reset() -> None:
+def test_data_setup_reset() -> None:
     fabric = Fabric(devices=1, accelerator="auto")
     data = LifecycleData()
 

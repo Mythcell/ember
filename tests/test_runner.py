@@ -9,22 +9,30 @@ from typer.testing import CliRunner
 from ember import EmberRunner
 from ember.cli import app
 
-if TYPE_CHECKING:
-    from ember import EmberModel
-    from ember.models import EmberModel as DirectEmberModel
-
-    def check_model_result(runner: EmberRunner[EmberModel]) -> None:
-        assert_type(runner.run(), DirectEmberModel)
-
-
-class NoResultRunner(EmberRunner):
-    def run(self) -> None:
-        pass
-
 
 class ConfigRunner(EmberRunner[DictConfig | ListConfig | None]):
     def run(self) -> DictConfig | ListConfig | None:
         return self.cfg
+
+
+if TYPE_CHECKING:
+    from ember import EmberModel
+    from ember.models import EmberModel as DirectEmberModel
+
+    class NoResultRunner(EmberRunner):
+        def run(self) -> None:
+            pass
+
+    def check_model_result(runner: EmberRunner[EmberModel]) -> None:
+        assert_type(runner.run(), DirectEmberModel)
+
+    def check_result_types() -> None:
+        assert_type(NoResultRunner().run(), None)
+        assert_type(ConfigRunner().run(), DictConfig | ListConfig | None)
+
+        runners: list[EmberRunner[object]] = [NoResultRunner(), ConfigRunner()]
+        for runner in runners:
+            assert_type(runner.run(), object)
 
 
 @dataclass(frozen=True)
@@ -153,7 +161,7 @@ model_params:
     ],
     ids=["empty_dict", "dict", "empty_list", "list"],
 )
-def test_in_memory_config_is_shared(cfg: DictConfig | ListConfig) -> None:
+def test_shared_config(cfg: DictConfig | ListConfig) -> None:
     runner = ConfigRunner(cfg=cfg)
 
     assert runner.cfg is cfg
@@ -173,7 +181,7 @@ def test_in_memory_config_is_shared(cfg: DictConfig | ListConfig) -> None:
         assert cfg[-1] == 3
 
 
-def test_runner_loads_config_with_positional_metadata(
+def test_config_loading(
     runner_files: RunnerFiles,
 ) -> None:
     runner = ConfigRunner(runner_files.config, runner_files.run.parent, 2)
@@ -185,7 +193,7 @@ def test_runner_loads_config_with_positional_metadata(
     assert runner.cfg.var == "test"
 
 
-def test_runner_without_config_returns_none() -> None:
+def test_no_config() -> None:
     runner = ConfigRunner()
 
     assert runner.cfg is None
@@ -194,24 +202,13 @@ def test_runner_without_config_returns_none() -> None:
 
 
 @pytest.mark.parametrize("cfg", [OmegaConf.create({}), OmegaConf.create([])])
-def test_conflicting_config_sources_fail_before_loading(
-    tmp_path: Path, cfg: DictConfig | ListConfig
-) -> None:
+def test_config_conflict(tmp_path: Path, cfg: DictConfig | ListConfig) -> None:
     with pytest.raises(ValueError, match="Supply either cfg or cfg_path"):
         ConfigRunner(cfg_path=tmp_path / "missing.yaml", cfg=cfg)
 
 
-def test_runner_result_types() -> None:
-    assert_type(NoResultRunner().run(), None)
-    assert_type(ConfigRunner().run(), DictConfig | ListConfig | None)
-
-    runners: list[EmberRunner[object]] = [NoResultRunner(), ConfigRunner()]
-    for runner in runners:
-        assert_type(runner.run(), object)
-
-
 @pytest.mark.parametrize("runner_attribute", ["run", "run_instance"])
-def test_cli_runs_discovered_runner_variants(
+def test_cli_discovery(
     cli_runner: CliRunner,
     runner_files: RunnerFiles,
     runner_attribute: str,
@@ -230,7 +227,7 @@ def test_cli_runs_discovered_runner_variants(
 
 
 @pytest.mark.parametrize("config_source", ["{}", "{'var': 'in-memory'}", "[]", "[1]"])
-def test_cli_preserves_exported_in_memory_config(
+def test_cli_shared_config(
     cli_runner: CliRunner,
     runner_files: RunnerFiles,
     config_source: str,
@@ -264,7 +261,7 @@ runner = ConfiguredRunner(cfg=cfg)
     assert result.stdout == ""
 
 
-def test_cli_runner_instantiates_local_objects(
+def test_cli_local_objects(
     cli_runner: CliRunner,
     runner_files: RunnerFiles,
 ) -> None:
@@ -281,7 +278,7 @@ def test_cli_runner_instantiates_local_objects(
     assert "10 0.3 True" in result.stdout
 
 
-def test_cli_reports_runner_discovery_errors(
+def test_cli_discovery_errors(
     cli_runner: CliRunner,
     runner_files: RunnerFiles,
 ) -> None:

@@ -4,7 +4,7 @@ import torch.nn as nn
 from ember.utils import instantiate
 
 
-def test_instantiate_prefers_matching_local_module_over_cached_module(tmp_path) -> None:
+def test_local_module_precedence(tmp_path) -> None:
     first_directory = tmp_path / "first"
     second_directory = tmp_path / "second"
     first_directory.mkdir()
@@ -39,7 +39,7 @@ class LocalModule(nn.Module):
     assert second.source == "second"
 
 
-def test_instantiate_preserves_missing_dependency_errors(tmp_path) -> None:
+def test_missing_dependency(tmp_path) -> None:
     (tmp_path / "broken_module.py").write_text(
         """
 import missing_dependency
@@ -55,22 +55,22 @@ class Broken:
     assert error.value.name == "missing_dependency"
 
 
-def test_instantiate_supports_import_aliases() -> None:
+def test_import_aliases() -> None:
     activation = instantiate("nn.ReLU")
 
     assert isinstance(activation, nn.ReLU)
 
 
-def test_instantiate_rejects_invalid_class_spec() -> None:
+def test_invalid_class_spec() -> None:
     with pytest.raises(ValueError, match="Invalid class_spec: ReLU"):
         instantiate("ReLU")
 
 
-def test_instantiate_rejects_wrong_expected_type() -> None:
+def test_expected_type() -> None:
     with pytest.raises(TypeError, match=r"pathlib\.Path must inherit from Module"):
         instantiate("pathlib.Path", expected_type=nn.Module)
 
 
-def test_instantiate_wraps_constructor_type_errors() -> None:
+def test_constructor_errors() -> None:
     with pytest.raises(TypeError, match=r"Failed to instantiate torch\.nn\.ReLU"):
         instantiate("torch.nn.ReLU", params={"bogus": True})

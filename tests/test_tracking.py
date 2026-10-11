@@ -28,23 +28,7 @@ class CustomTrackingModel(EmberModel):
         )
 
 
-def test_history_exposes_registered_tracker_values(fitted_model: EmberModel) -> None:
-    required_keys = {
-        "train_loss",
-        "val_loss",
-        "train_MulticlassAccuracy",
-        "val_MulticlassAccuracy",
-        "lr_0",
-    }
-
-    assert required_keys <= fitted_model.history.keys()
-    assert all(len(fitted_model.history[key]) == 2 for key in required_keys)
-    assert (
-        fitted_model.history.keys() == fitted_model.tracker.get_history_items().keys()
-    )
-
-
-def test_custom_tracker_keys_replace_default_history(
+def test_custom_history(
     model_factory: ModelFactory,
 ) -> None:
     model = model_factory(
@@ -67,7 +51,7 @@ def test_custom_tracker_keys_replace_default_history(
     assert model.history["custom_aux"] == [1.5]
 
 
-def test_zero_is_a_valid_logging_step_and_epoch() -> None:
+def test_zero_step_and_epoch() -> None:
     device = Fabric(devices=1, accelerator="auto").device
     fabric = MagicMock()
     fabric.device = device

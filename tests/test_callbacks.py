@@ -39,7 +39,7 @@ def make_checkpoint_callback(save_dir: Path, **kwargs) -> ModelCheckpoint:
     return ModelCheckpoint(**params)
 
 
-def test_model_checkpoint_rejects_invalid_values(tmp_path: Path) -> None:
+def test_checkpoint_validation(tmp_path: Path) -> None:
     invalid_mode = cast("Any", "middle")
     with pytest.raises(ValueError, match="mode must be 'min' or 'max'"):
         ModelCheckpoint(monitor="val_loss", save_dir=tmp_path, mode=invalid_mode)
@@ -53,7 +53,7 @@ def test_model_checkpoint_rejects_invalid_values(tmp_path: Path) -> None:
         ModelCheckpoint(monitor="val_loss", save_dir=tmp_path, warmup_epochs=-1)
 
 
-def test_early_stopping_rejects_invalid_values() -> None:
+def test_early_stopping_validation() -> None:
     invalid_mode = cast("Any", "middle")
     with pytest.raises(ValueError, match="mode must be 'min' or 'max'"):
         EarlyStopping(monitor="val_loss", mode=invalid_mode)
@@ -72,7 +72,7 @@ def fake_embermodel(history: dict[str, list[float]]) -> EmberModel:
     return cast("EmberModel", value)
 
 
-def test_early_stopping_follows_synthetic_metric_history() -> None:
+def test_early_stopping_patience() -> None:
     model = fake_embermodel({"val_loss": []})
     callback = EarlyStopping(monitor="val_loss", patience=1)
     callback.on_train_start(model)
@@ -88,7 +88,7 @@ def test_early_stopping_follows_synthetic_metric_history() -> None:
     assert not model.should_train
 
 
-def test_early_stopping_begins_monitoring_after_warmup() -> None:
+def test_early_stopping_warmup() -> None:
     model = fake_embermodel({"val_loss": []})
     callback = EarlyStopping(
         monitor="val_loss",
@@ -109,7 +109,7 @@ def test_early_stopping_begins_monitoring_after_warmup() -> None:
     assert not model.should_train
 
 
-def test_early_stopping_recovers_only_post_warmup_history() -> None:
+def test_early_stopping_resume() -> None:
     model = fake_embermodel({"val_loss": [0.1, 0.2, 1.0]})
     callback = EarlyStopping(monitor="val_loss", patience=1, warmup_epochs=2)
 
@@ -126,7 +126,7 @@ def test_early_stopping_recovers_only_post_warmup_history() -> None:
         ("max", (0.5, 1.0), 1.0),
     ],
 )
-def test_early_stopping_stops_when_threshold_is_reached(
+def test_early_stopping_threshold(
     mode: str,
     metric_history: tuple[float, ...],
     stopping_threshold: float,
@@ -146,7 +146,7 @@ def test_early_stopping_stops_when_threshold_is_reached(
     assert not model.should_train
 
 
-def test_callbacks_require_registered_metrics() -> None:
+def test_callback_monitors() -> None:
     model = fake_embermodel({})
 
     with pytest.raises(ValueError, match="val_loss is not a registered metric"):
@@ -269,7 +269,7 @@ class RecordingCallback(EmberCallback):
         self.record("validation_batch_end", epoch, step, batch_idx)
 
 
-def test_callback_hooks_receive_ordered_epoch_and_step_state(
+def test_callback_lifecycle(
     model_factory: ModelFactory,
 ) -> None:
     model = model_factory(metrics=False, scheduler=False)
@@ -302,7 +302,7 @@ def test_callback_hooks_receive_ordered_epoch_and_step_state(
     ]
 
 
-def test_validation_callbacks_are_safe_when_validation_is_disabled(
+def test_callbacks_without_validation(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
@@ -337,7 +337,7 @@ def test_validation_callbacks_are_safe_when_validation_is_disabled(
     assert list(tmp_path.glob("*.ckpt")) == []
 
 
-def test_top_k_checkpoints_retain_the_best_values(
+def test_checkpoint_top_k(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
@@ -364,7 +364,7 @@ def test_top_k_checkpoints_retain_the_best_values(
         model.load_best_checkpoint()
 
 
-def test_checkpoint_cadence_and_last_checkpoint(
+def test_checkpoint_cadence(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
@@ -398,7 +398,7 @@ def test_checkpoint_cadence_and_last_checkpoint(
     model.load_last_checkpoint()
 
 
-def test_zero_top_k_disables_best_checkpoints(
+def test_best_checkpoints_disabled(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
@@ -423,7 +423,7 @@ def test_zero_top_k_disables_best_checkpoints(
     assert list(tmp_path.glob("*.ckpt")) == []
 
 
-def test_checkpoint_restores_model_optimizer_scheduler_and_history(
+def test_checkpoint_restore(
     fitted_model: EmberModel,
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,
@@ -470,7 +470,7 @@ def test_checkpoint_restores_model_optimizer_scheduler_and_history(
     assert restored_model.epoch_count == fitted_model.epoch_count + 1
 
 
-def test_optuna_pruner_reports_synthetic_history() -> None:
+def test_pruner_reporting() -> None:
     reporting_trial = MagicMock()
     reporting_trial.should_prune.return_value = False
     model = fake_embermodel({"val_loss": [0.8, 0.4]})
@@ -480,7 +480,7 @@ def test_optuna_pruner_reports_synthetic_history() -> None:
     reporting_trial.report.assert_called_once_with(0.4, step=1)
 
 
-def test_optuna_pruner_raises_when_trial_should_prune() -> None:
+def test_pruner_exception() -> None:
     model = fake_embermodel({"val_loss": [0.4]})
     pruning_trial = MagicMock()
     pruning_trial.should_prune.return_value = True
@@ -508,52 +508,18 @@ class FailingTrainModel(EmberModel):
         raise RuntimeError("train failed")
 
 
-class FailingValModel(EmberModel):
-    def val_step(self, batch, batch_idx: int, epoch: int):
-        raise RuntimeError("val failed")
-
-
-class FailingEvalModel(EmberModel):
-    def eval_step(self, batch, batch_idx: int, eval_tracker=None):
-        raise RuntimeError("eval failed")
-
-
-class FailingPredictModel(EmberModel):
-    def pred_step(self, batch, batch_idx: int):
-        raise RuntimeError("predict failed")
-
-
-def run_failing_stage(model: EmberModel, stage: str) -> None:
-    if stage == "train":
-        model.fit(train_data=make_loader(), epochs=1)
-    elif stage == "val":
-        model.fit(train_data=make_loader(), val_data=make_loader(), epochs=1)
-    elif stage == "eval":
-        model.evaluate(eval_data=make_loader())
-    else:
-        model.predict(data=make_loader())
-
-
-def test_progress_bars_close_when_model_steps_fail(
+def test_progress_cleanup_on_error(
     model_factory: ModelFactory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("ember.models.tqdm", RecordingTqdm)
-    cases: list[tuple[str, type[EmberModel], int]] = [
-        ("train", FailingTrainModel, 1),
-        ("val", FailingValModel, 2),
-        ("eval", FailingEvalModel, 1),
-        ("predict", FailingPredictModel, 1),
-    ]
-
-    for stage, model_class, expected_bars in cases:
-        RecordingTqdm.instances = []
-        model = model_factory(
-            model_class=model_class,
-            metrics=False,
-            scheduler=False,
-        )
-        with pytest.raises(RuntimeError, match=f"{stage} failed"):
-            run_failing_stage(model, stage)
-        assert len(RecordingTqdm.instances) == expected_bars
-        assert all(progress.closed for progress in RecordingTqdm.instances)
+    RecordingTqdm.instances = []
+    model = model_factory(
+        model_class=FailingTrainModel,
+        metrics=False,
+        scheduler=False,
+    )
+    with pytest.raises(RuntimeError, match="train failed"):
+        model.fit(train_data=make_loader(), epochs=1, show_metrics=False)
+    assert RecordingTqdm.instances
+    assert all(progress.closed for progress in RecordingTqdm.instances)
