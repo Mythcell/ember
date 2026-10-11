@@ -90,6 +90,68 @@ def make_metric_loader() -> DataLoader:
     return DataLoader(TensorDataset(logits, targets), batch_size=3, shuffle=False)
 
 
+@pytest.mark.parametrize("as_module", [False, True])
+def test_paired_augmentation(
+    model_factory: ModelFactory,
+    as_module: bool,
+) -> None:
+    calls: list[tuple[torch.Tensor, torch.Tensor]] = []
+
+    def flip(
+        inputs: torch.Tensor, targets: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        calls.append((inputs, targets))
+        return inputs.flip(-1), targets.flip(-1)
+
+    class PairedFlip(nn.Module):
+        def forward(
+            self, inputs: torch.Tensor, targets: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            return flip(inputs, targets)
+
+    model = model_factory(aug_fn=PairedFlip() if as_module else flip)
+    model.augment_targets = True
+    grid = torch.arange(16).reshape(2, 1, 2, 4)
+    inputs = grid.repeat(1, 3, 1, 1).float()
+    targets = grid.repeat(1, 2, 1, 1)
+
+    augmented_inputs, augmented_targets = model.augment_batch((inputs, targets))
+
+    ((received_inputs, received_targets),) = calls
+    assert received_inputs is inputs
+    assert received_targets is targets
+    torch.testing.assert_close(augmented_inputs, inputs.flip(-1))
+    torch.testing.assert_close(augmented_targets, targets.flip(-1))
+
+
+def test_input_only_augmentation(model_factory: ModelFactory) -> None:
+    def shift(inputs: torch.Tensor) -> torch.Tensor:
+        return inputs + 1
+
+    model = model_factory(aug_fn=shift)
+    inputs, targets = make_dataset(2, seed=600).tensors
+
+    augmented_inputs, augmented_targets = model.augment_batch((inputs, targets))
+
+    torch.testing.assert_close(augmented_inputs, inputs + 1)
+    assert augmented_targets is targets
+
+
+@pytest.mark.parametrize("augment_targets", [False, True])
+def test_no_augmentation(
+    model_factory: ModelFactory,
+    augment_targets: bool,
+) -> None:
+    model = model_factory()
+    model.augment_targets = augment_targets
+    inputs, targets = make_dataset(2, seed=600).tensors
+
+    augmented_inputs, augmented_targets = model.augment_batch((inputs, targets))
+
+    assert augmented_inputs is inputs
+    assert augmented_targets is targets
+
+
 def test_fit_tracks_epochs_steps_and_metrics(
     model_factory: ModelFactory,
     synthetic_data: SyntheticData,

@@ -67,6 +67,7 @@ def model_factory() -> ModelFactory:
         *,
         model: nn.Module | None = None,
         model_class: type[EmberModel] = EmberModel,
+        aug_fn: nn.Module | None = None,
         metrics: bool = True,
         no_validation: bool = False,
         scheduler: bool = True,
@@ -95,6 +96,7 @@ def model_factory() -> ModelFactory:
             schedulers=schedulers,
             loss_fn=nn.CrossEntropyLoss(),
             metrics=metric_list,
+            aug_fn=aug_fn,
             no_validation=no_validation,
         )
 

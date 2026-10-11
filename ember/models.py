@@ -40,7 +40,7 @@ class EmberModel:
         optimizers: list[Optimizer],
         loss_fn: nn.Module | None = None,
         metrics: list[torchmetrics.Metric] | None = None,
-        aug_fn: nn.Module | Callable[[torch.Tensor], torch.Tensor] | None = None,
+        aug_fn: nn.Module | None = None,
         schedulers: list[LRScheduler] | None = None,
         setup_fabric: bool = True,
         log_lr: Literal["auto"] | bool = "auto",
@@ -67,8 +67,10 @@ class EmberModel:
                 as `nn.Module` classes.
             metrics: List of TorchMetrics metrics for automatic metric calculation.
                 Override `update_metric` for custom metric inputs.
-            aug_fn: Function to apply to batches from the dataloader. Override
-                `augment_batch` for custom data augmentation.
+            aug_fn: Training augmentation module. Must accept `x` and
+                return augmented inputs, or accept `(x, y)` and return an augmented
+                pair when `fit(augment_targets=True)`. None disables augmentation.
+                Override `augment_batch` for custom data augmentation.
             schedulers: A list of schedulers to use. Override `scheduler_step` for
                 custom scheduler steps.
             setup_fabric: Whether to run the `fabric_setup` function. Default is True.
@@ -92,10 +94,7 @@ class EmberModel:
             self.fabric_setup()
         self.loss_fn = loss_fn
         self.metrics = self.fabric.to_device(metrics) if metrics else []
-        self.aug_fn = cast(
-            "Callable[[torch.Tensor], torch.Tensor]",
-            nn.Identity() if aug_fn is None else aug_fn,
-        )
+        self.aug_fn = aug_fn
         self.schedulers = schedulers
         self.reduce_lr_on_plateau_monitor = reduce_lr_on_plateau_monitor
 
@@ -323,6 +322,11 @@ class EmberModel:
         """
         Applies data augmentation to the current batch.
 
+        Calls `aug_fn(x)` for input-only augmentation, or `aug_fn(x, y)` when
+        `augment_targets` is True. The paired callable owns shared randomness,
+        target semantics and type-specific operations, and may leave either
+        argument unchanged.
+
         Args:
             batch: A single batch from a `DataLoader`.
 
@@ -330,9 +334,10 @@ class EmberModel:
             Tuple of inputs and targets.
         """
         x, y = batch[0], batch[-1]
+        if self.aug_fn is None:
+            return x, y
         if self.augment_targets:
-            aug = self.aug_fn(torch.cat((x, y), dim=0))
-            x, y = aug[: x.shape[0]], aug[x.shape[0] :]
+            x, y = self.aug_fn(x, y)
         else:
             x = self.aug_fn(x)
         return x, y
@@ -528,9 +533,9 @@ class EmberModel:
                 priority over train_data and val_data.
             accumulate_grad_batches: Accumulates gradients for every [n] batches
                 before stepping the optimizer.
-            augment_targets: Whether to apply the same data augmentation to the targets
-                (i.e. labels) as well as the inputs, such as for an image-to-image
-                model.
+            augment_targets: Whether to call `aug_fn(x, y)` and use the returned
+                input-target pair. If False, calls `aug_fn(x)` and leaves targets
+                unchanged.
             gradients_clip_val: Clips gradients to within value (+/-). See
                 `fabric.clip_gradients()`.
             gradients_max_norm: Clips gradients such that their total norm does not
