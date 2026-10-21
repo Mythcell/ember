@@ -12,7 +12,7 @@ Key features:
 - Custom `EmberCallback` callback system with full lifecycle hooks.
 - Built-in `EmberTracker` metric/history tracking inspired by Keras' `History` object.
 - Lightweight, optional `EmberData` container inspired by Lightning's `LightningDataModule`.
-- Default train loop integration with TorchMetrics.
+- TorchMetrics integration with tracker-managed computation and reset.
 - Supports hyperparameter tuning with `optuna` (including trial pruning).
 - Implicit resume: simply run `model.fit()` again to continue training.
 

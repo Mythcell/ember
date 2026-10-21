@@ -7,9 +7,9 @@ from conftest import ModelFactory, SyntheticData, TinyClassifier, make_dataset
 from lightning import Fabric
 from torch.utils.data import DataLoader, TensorDataset
 from torchmetrics import Accuracy, Metric, Precision
-from torchmetrics.classification import MulticlassConfusionMatrix, MulticlassF1Score
+from torchmetrics.classification import MulticlassF1Score
 
-from ember import EmberModel
+from ember import EmberModel, EmberTracker
 
 
 def make_loader(num_samples: int, *, batch_size: int = 1) -> DataLoader:
@@ -52,29 +52,37 @@ class FixedLogitModel(nn.Module):
         return inputs * self.scale
 
 
-class TargetOverrideMetricModel(EmberModel):
-    def update_metric(
-        self,
-        metric: Metric,
-        batch: tuple[torch.Tensor, torch.Tensor] | tuple,
-        y_pred: torch.Tensor | tuple[torch.Tensor, ...],
-    ) -> None:
-        metric.update(y_pred, torch.zeros_like(batch[-1]))
+class MetricModel(EmberModel):
+    def report_step(self, tracker, key_type, loss, y_pred, y) -> None:
+        super().report_step(tracker, key_type, loss, y_pred, y)
+        tracker.update_torchmetric(f"{key_type}_score", y_pred, y)
+
+
+class TargetOverrideMetricModel(MetricModel):
+    def report_step(self, tracker, key_type, loss, y_pred, y) -> None:
+        super().report_step(tracker, key_type, loss, y_pred, torch.zeros_like(y))
 
 
 def make_metric_model(
-    metrics: list[Metric],
+    metric: Metric,
     *,
-    model_class: type[EmberModel] = EmberModel,
+    model_class: type[EmberModel] | None = None,
+    automatic: bool = False,
 ) -> EmberModel:
     module = FixedLogitModel()
-    return model_class(
+    if model_class is None:
+        model_class = EmberModel if automatic else MetricModel
+    model = model_class(
         fabric=Fabric(devices=1, accelerator="auto"),
         model=module,
         optimizers=[torch.optim.SGD(module.parameters(), lr=0)],
         loss_fn=nn.CrossEntropyLoss(),
-        metrics=metrics,
+        metrics=[metric] if automatic else None,
     )
+    if not automatic:
+        model.tracker.register_torchmetric("train_score", metric, "train")
+        model.tracker.register_torchmetric("val_score", metric.clone(), "val")
+    return model
 
 
 def make_metric_loader() -> DataLoader:
@@ -173,9 +181,11 @@ def test_fit_history(
     assert model.history["lr_0"]
 
 
-def test_metric_lifecycle() -> None:
+@pytest.mark.parametrize("automatic", [False, True])
+def test_metric_lifecycle(automatic: bool) -> None:
     metric = MulticlassF1Score(num_classes=2, average="macro")
-    model = make_metric_model([metric])
+    model = make_metric_model(metric, automatic=automatic)
+    name = "MulticlassF1Score" if automatic else "score"
     data = make_metric_loader()
 
     model.fit(
@@ -187,14 +197,18 @@ def test_metric_lifecycle() -> None:
     )
 
     expected = pytest.approx([1 / 3, 1 / 3])
-    assert model.history["train_MulticlassF1Score"] == expected
-    assert model.history["val_MulticlassF1Score"] == expected
+    assert model.history[f"train_{name}"] == expected
+    assert model.history[f"val_{name}"] == expected
+    for _ in range(2):
+        result = model.evaluate(data, show_metrics=False)
+        assert result[f"val_{name}"] == pytest.approx([1 / 3])
+    assert model.history[f"val_{name}"] == expected
     assert not metric.update_called
 
 
 def test_metric_override() -> None:
     metric = Accuracy(task="multiclass", num_classes=2)
-    model = make_metric_model([metric], model_class=TargetOverrideMetricModel)
+    model = make_metric_model(metric, model_class=TargetOverrideMetricModel)
 
     results = model.evaluate(
         eval_data=make_metric_loader(),
@@ -202,31 +216,123 @@ def test_metric_override() -> None:
         show_progress_bar=False,
     )
 
-    assert results["val_MulticlassAccuracy"] == [1.0]
+    assert results["val_score"] == [1.0]
     assert not metric.update_called
 
 
-def test_metric_validation() -> None:
-    duplicate_metrics = [
-        Accuracy(task="multiclass", num_classes=2),
-        Accuracy(task="multiclass", num_classes=2),
-    ]
-    with pytest.raises(ValueError, match="Metric names must be unique"):
-        make_metric_model(duplicate_metrics)
+@pytest.mark.parametrize("automatic", [False, True])
+def test_augmented_reporting(automatic: bool) -> None:
+    class ZeroTargets(nn.Module):
+        def forward(self, inputs, targets):
+            return inputs, torch.zeros_like(targets)
 
-    metric = MulticlassConfusionMatrix(num_classes=2)
-    model = make_metric_model([])
-    with pytest.raises(
-        ValueError,
-        match="MulticlassConfusionMatrix must compute a single tensor value",
-    ):
-        model.evaluate(
-            eval_data=make_metric_loader(),
-            metrics=[metric],
-            show_metrics=False,
-            show_progress_bar=False,
-        )
+    class RecordingLoss(nn.CrossEntropyLoss):
+        def __init__(self) -> None:
+            super().__init__()
+            self.targets: list[torch.Tensor] = []
+
+        def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+            self.targets.append(target.detach().clone())
+            return super().forward(input, target)
+
+    model = make_metric_model(
+        Accuracy(task="multiclass", num_classes=2, average="micro"),
+        automatic=automatic,
+    )
+    model.aug_fn = ZeroTargets()
+    loss = RecordingLoss()
+    model.loss_fn = loss
+    model.fit(
+        train_data=make_metric_loader(),
+        epochs=1,
+        augment_targets=True,
+        show_metrics=False,
+        show_progress_bar=False,
+    )
+    assert all(target.eq(0).all() for target in loss.targets)
+    name = "MulticlassAccuracy" if automatic else "score"
+    assert model.history[f"train_{name}"] == [1.0]
+
+
+def test_metric_restore(tmp_path: Path) -> None:
+    original = make_metric_model(
+        Accuracy(task="multiclass", num_classes=2), automatic=True
+    )
+    original.tracker.register("custom", "train")
+    original.fit(
+        make_metric_loader(), epochs=1, show_metrics=False, show_progress_bar=False
+    )
+    path = tmp_path / "metrics.ckpt"
+    original.save_checkpoint(path)
+    restored = make_metric_model(
+        Precision(task="multiclass", num_classes=2), automatic=True
+    )
+    restored.load_checkpoint(path)
+    assert restored.epoch_count == original.epoch_count
+    assert restored.step_count == original.step_count
+    assert restored.history["train_loss"] == original.history["train_loss"]
+    assert restored.history["custom"] == original.history["custom"]
+    assert "train_MulticlassAccuracy" not in restored.history
+    assert restored.history["train_MulticlassPrecision"] == []
+    restored.fit(
+        make_metric_loader(), epochs=1, show_metrics=False, show_progress_bar=False
+    )
+    assert restored.history["train_MulticlassPrecision"]
+
+
+class FailingMetricModel(MetricModel):
+    fail = True
+    last_tracker: EmberTracker | None = None
+
+    def report_step(self, tracker, key_type, loss, y_pred, y) -> None:
+        super().report_step(tracker, key_type, loss, y_pred, y)
+        self.last_tracker = tracker
+        if self.fail:
+            raise RuntimeError("reporting failed")
+
+
+@pytest.mark.parametrize("stage", ["fit", "evaluate"])
+def test_reporting_failure(stage: str) -> None:
+    metric = Accuracy(task="multiclass", num_classes=2, average="micro")
+    model = make_metric_model(metric, model_class=FailingMetricModel)
+    assert isinstance(model, FailingMetricModel)
+
+    def run() -> None:
+        if stage == "fit":
+            model.fit(train_data=make_metric_loader(), epochs=1, show_metrics=False)
+        else:
+            model.evaluate(eval_data=make_metric_loader(), show_metrics=False)
+
+    with pytest.raises(RuntimeError, match="reporting failed"):
+        run()
+    assert model.epoch_count == 0
+    assert model.last_tracker is not None
+    group = "train" if stage == "fit" else "val"
+    model.last_tracker.sync_epoch(group)
+    assert model.last_tracker.get_history_items()[f"{group}_score"] == [0.0]
+    assert model.last_tracker.get_history_items()[f"{group}_loss"] == [0.0]
     assert not metric.update_called
+    model.fail = False
+    run()
+
+
+def test_unreported_progress(model_factory: ModelFactory, tmp_path: Path) -> None:
+    class UnreportedModel(EmberModel):
+        def setup_tracker(self) -> None:
+            pass
+
+    model = model_factory(model_class=UnreportedModel, scheduler=False)
+    model.fit(train_data=make_loader(2), epochs=2, show_progress_bar=False)
+    assert model.history == {}
+    assert model.epoch_count == 2
+    path = tmp_path / "unreported.ckpt"
+    model.save_checkpoint(path)
+    restored = model_factory(model_class=UnreportedModel, scheduler=False)
+    restored.load_checkpoint(path)
+    restored.fit(train_data=make_loader(2), steps=1, show_progress_bar=False)
+    assert restored.epoch_count == 3
+    assert restored.step_count == 5
+    assert restored.history == {}
 
 
 def test_step_resume(
@@ -380,11 +486,20 @@ def test_plateau_scheduler(
     optimizer = model.optimizers[0]
     initial_lr = optimizer.param_groups[0]["lr"]
 
-    model.history["val_loss"] = [1.0]
+    model.tracker.update("val_loss", torch.tensor(1.0, device=model.fabric.device))
+    model.tracker.sync_epoch(keys="val_loss", epoch=model.epoch_count)
+    model.history = model.tracker.get_history_items()
     model.scheduler_step()
     assert optimizer.param_groups[0]["lr"] == initial_lr
 
-    model.history["val_loss"].append(2.0)
+    model.epoch_count += 1
+    model.tracker.update("val_loss", torch.tensor(2.0, device=model.fabric.device))
+    model.tracker.sync_epoch(keys="val_loss", epoch=model.epoch_count)
+    model.history = model.tracker.get_history_items()
+    model.scheduler_step()
+    assert optimizer.param_groups[0]["lr"] == initial_lr * 0.5
+
+    model.epoch_count += 1
     model.scheduler_step()
     assert optimizer.param_groups[0]["lr"] == initial_lr * 0.5
 
@@ -413,7 +528,6 @@ def test_predict_outputs(
 ) -> None:
     model = model_factory(
         model=MultiOutputModel() if multiple_outputs else FixedLogitModel(),
-        metrics=False,
         no_validation=True,
         scheduler=False,
     )
@@ -434,50 +548,57 @@ def test_predict_outputs(
         torch.testing.assert_close(prediction.cpu(), expected_output)
 
 
-class CustomEvalTrackerModel(EmberModel):
+class CustomEvalTrackerModel(MetricModel):
     def setup_tracker(self) -> None:
         super().setup_tracker()
         self.tracker.register("val_custom_score", key_type="val")
 
-    def eval_step(self, batch, batch_idx: int, eval_tracker=None):
-        output = super().eval_step(batch, batch_idx, eval_tracker)
-        if output is not None and eval_tracker is not None:
-            _, predictions = output
-            eval_tracker.update(
-                "val_custom_score",
-                torch.tensor(0.25, device=self.fabric.device),
-                batch_size=predictions.shape[0],
-            )
-        return output
+    def eval_step(self, batch, batch_idx: int, eval_tracker: EmberTracker) -> None:
+        super().eval_step(batch, batch_idx, eval_tracker)
+        eval_tracker.update(
+            "val_custom_score",
+            torch.tensor(0.25, device=self.fabric.device),
+            batch_size=batch[0].shape[0],
+        )
 
 
-def test_evaluation_isolation(
-    model_factory: ModelFactory,
-) -> None:
-    model = model_factory(
-        model_class=CustomEvalTrackerModel,
-        metrics=False,
+def test_evaluation_isolation(model_factory: ModelFactory) -> None:
+    model = model_factory(model_class=CustomEvalTrackerModel)
+    model.tracker.register_torchmetric(
+        "val_score", Precision(task="multiclass", num_classes=2, average="macro"), "val"
     )
-    model.metrics = model.fabric.to_device(
-        [Precision(task="multiclass", num_classes=2, average="macro")]
+    history_before = model.tracker.get_history_items()
+    template = EmberTracker(model.fabric)
+    template.register(["val_loss", "val_custom_score"], "val")
+    metric = Accuracy(task="multiclass", num_classes=2)
+    template.register_torchmetric("val_score", metric, "val")
+    template.update_torchmetric(
+        "val_score",
+        torch.tensor([0], device=model.fabric.device),
+        torch.tensor([0], device=model.fabric.device),
     )
-    history_before = {key: list(values) for key, values in model.history.items()}
-    evaluation_metric = Accuracy(task="multiclass", num_classes=2)
+    original_score = metric.compute().clone()
 
-    metrics = model.evaluate(
-        eval_data=make_loader(4, batch_size=2),
-        metrics=[evaluation_metric],
-        show_metrics=False,
-        show_progress_bar=False,
-    )
+    def evaluate(template: EmberTracker | None = None):
+        return model.evaluate(
+            eval_data=make_loader(4, batch_size=2),
+            eval_tracker=template,
+            show_metrics=False,
+            show_progress_bar=False,
+        )
 
-    assert set(metrics) == {
-        "val_loss",
-        "val_MulticlassAccuracy",
-        "val_custom_score",
+    result = evaluate(template)
+    assert set(result) == {"val_loss", "val_score", "val_custom_score"}
+    assert result == evaluate(template)
+    assert evaluate() == evaluate()
+    assert model.tracker.get_history_items() == history_before
+    assert template.get_history_items() == {
+        "val_loss": [],
+        "val_custom_score": [],
+        "val_score": [],
     }
-    assert model.history == history_before
-    assert not evaluation_metric.update_called
+    assert metric.update_called
+    torch.testing.assert_close(metric.compute(), original_score)
 
 
 class LayeredClassifier(nn.Module):

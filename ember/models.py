@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast, final
 
 import torch
 import torch.nn as nn
-import torchmetrics
 from lightning.fabric import Fabric
 from lightning.fabric.utilities.rank_zero import rank_zero_only
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
+from torchmetrics import Metric
 from tqdm import tqdm
 
 from ember.utils._summary import model_summary
@@ -39,7 +39,7 @@ class EmberModel:
         model: nn.Module,
         optimizers: list[Optimizer],
         loss_fn: nn.Module | None = None,
-        metrics: list[torchmetrics.Metric] | None = None,
+        metrics: list[Metric] | None = None,
         aug_fn: nn.Module | None = None,
         schedulers: list[LRScheduler] | None = None,
         setup_fabric: bool = True,
@@ -65,8 +65,9 @@ class EmberModel:
             optimizers: A list of torch Optimizers for training.
             loss_fn: The default loss function to use. Custom losses should be defined
                 as `nn.Module` classes.
-            metrics: List of TorchMetrics metrics for automatic metric calculation.
-                Override `update_metric` for custom metric inputs.
+            metrics: Metrics automatically reported by default supervised steps.
+                The tracker owns independent training and validation instances,
+                named `train_{class_name}` and `val_{class_name}`.
             aug_fn: Training augmentation module. Must accept `x` and
                 return augmented inputs, or accept `(x, y)` and return an augmented
                 pair when `fit(augment_targets=True)`. None disables augmentation.
@@ -87,19 +88,23 @@ class EmberModel:
         self.fabric = fabric
         self.model = model
         self.optimizers = optimizers
-        self._validate_metrics(metrics or [])
         if self.fabric.world_size > 1:
             self.fabric.launch()
         if setup_fabric:
             self.fabric_setup()
         self.loss_fn = loss_fn
-        self.metrics = self.fabric.to_device(metrics) if metrics else []
         self.aug_fn = aug_fn
         self.schedulers = schedulers
         self.reduce_lr_on_plateau_monitor = reduce_lr_on_plateau_monitor
 
         self.tracker = EmberTracker(fabric=self.fabric)
         self.setup_tracker()
+        self._metric_names: list[str] = []
+        for metric in metrics or []:
+            name = metric._get_name()
+            self.tracker.register_torchmetric(f"train_{name}", metric, "train")
+            self.tracker.register_torchmetric(f"val_{name}", metric.clone(), "val")
+            self._metric_names.append(name)
         self._setup_lr_tracking(log_lr)
         self.history = self.tracker.get_history_items()
 
@@ -179,22 +184,19 @@ class EmberModel:
 
     def train_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int, epoch: int
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    ) -> None:
         """
         Conducts a single training step.
 
         Processes the input batch, backpropagates the loss and updates the optimizer.
         `EmberModel` subclasses should override this function instead of `fit()` when
-        implementing custom training steps. You may return a tuple (loss, y_pred) for
-        automatic metric calculation.
+        implementing custom training steps. Report through the tracker directly or
+        override `report_step` to customize reporting from this default step.
 
         Args:
             batch: A single batch from a `DataLoader`.
             batch_idx: Index of the current batch.
             epoch: The current epoch.
-
-        Returns:
-            Optional tuple of (loss, y_pred) for default logging and metric calculation.
         """
         batch = self.augment_batch(batch)
         x, y = batch[0], batch[-1]
@@ -223,61 +225,53 @@ class EmberModel:
             opt.step()
             opt.zero_grad()
 
-        return loss, y_pred
+        self.report_step(self.tracker, "train", loss, y_pred, y)
 
     def val_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int, epoch: int
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+    ) -> None:
         """
         Conducts a single validation step.
 
         `EmberModel` subclasses should override this function instead of `fit()` when
         implementing custom validation steps. Note that this function is run within a
-        `torch.inference_mode()` context. You may return a tuple (loss, y_pred) for
-        automatic metric calculation.
+        `torch.inference_mode()` context. Report through the tracker directly or
+        override `report_step` to customize reporting from this default step.
 
         Args:
             batch: A single batch from a `DataLoader`.
             batch_idx: Index of the current batch.
             epoch: The current epoch.
-
-        Returns:
-            Optional tuple (`loss`, `y_pred`) for default logging and metric
-            calculation.
         """
         x, y = batch[0], batch[-1]
         y_pred = self.model(x)
         loss_fn = cast("Callable[..., torch.Tensor]", self.loss_fn)
         loss = loss_fn(y_pred, y)
-        return loss, y_pred
+        self.report_step(self.tracker, "val", loss, y_pred, y)
 
     def eval_step(
         self,
         batch: tuple[torch.Tensor, ...] | tuple,
         batch_idx: int,
-        eval_tracker: EmberTracker | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        eval_tracker: EmberTracker,
+    ) -> None:
         """
         Conducts a single evaluation step.
 
         `EmberModel` subclasses should override this function instead of `evaluate()`.
         Note that this function is run within a `torch.inference_mode()` context.
-        You may return a tuple (loss, y_pred) for automatic metric calculation.
+        Report through the supplied tracker directly or override `report_step`.
 
         Args:
             batch: A single batch from a `DataLoader`.
             batch_idx: Index of the current batch.
-            eval_tracker: Optional tracker instance passed by `evaluate()`.
-
-        Returns:
-            Optional tuple (`loss`, `y_pred`) for default logging and metric
-            calculation.
+            eval_tracker: Independent tracker passed by `evaluate()`.
         """
         x, y = batch[0], batch[-1]
         y_pred = self.model(x)
         loss_fn = cast("Callable[..., torch.Tensor]", self.loss_fn)
         loss = loss_fn(y_pred, y)
-        return loss, y_pred
+        self.report_step(eval_tracker, "val", loss, y_pred, y)
 
     def pred_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int
@@ -297,23 +291,28 @@ class EmberModel:
         x = batch[0]
         return cast("torch.Tensor | tuple[torch.Tensor, ...]", self.model(x))
 
-    def update_metric(
+    def report_step(
         self,
-        metric: torchmetrics.Metric,
-        batch: tuple[torch.Tensor, torch.Tensor] | tuple,
-        y_pred: torch.Tensor | tuple[torch.Tensor, ...],
+        tracker: EmberTracker,
+        key_type: Literal["train", "val"],
+        loss: torch.Tensor,
+        y_pred: torch.Tensor,
+        y: torch.Tensor,
     ) -> None:
-        """
-        Updates a TorchMetric with predictions and targets from one batch.
+        """Record loss and constructor metrics from a default supervised step.
 
-        Args:
-            metric: The TorchMetric to update.
-            batch: A single batch from a `DataLoader`.
-                Targets are treated as `batch[-1]`.
-            y_pred: The Tensor of model predictions.
+        Override this hook to explicitly update named TorchMetrics with the actual
+        predictions and targets used by the loss. Custom step implementations can
+        instead report directly through their tracker.
         """
-        y = batch[-1]
-        metric.update(y_pred, y)
+        tracker.update(
+            f"{key_type}_loss",
+            loss,
+            batch_size=y_pred.shape[0],
+            step=self.step_count + 1 if key_type == "train" else None,
+        )
+        for name in self._metric_names:
+            tracker.update_torchmetric(f"{key_type}_{name}", y_pred, y)
 
     def augment_batch(
         self,
@@ -355,89 +354,17 @@ class EmberModel:
         for scheduler in self.schedulers:
             if isinstance(scheduler, ReduceLROnPlateau):
                 monitor_values = self.history.get(self.reduce_lr_on_plateau_monitor, [])
-                if monitor_values:
+                if monitor_values and self.tracker._has_epoch_value(
+                    self.reduce_lr_on_plateau_monitor, self.epoch_count
+                ):
                     scheduler.step(metrics=monitor_values[-1])
             else:
                 scheduler.step()
 
     def setup_tracker(self) -> None:
-        """
-        Defines and registers keys for metric tracking with the built-in `EmberTracker`.
-        By default this includes the following keys: "train_loss", "val_loss",
-        plus keys for each present `torchmetrics.Metric` prefixed with "train\\_"
-        and "val\\_".
-
-        All subclasses should override this function and register custom keys here.
-        """
-        train_keys = self._get_default_tracker_keys("train", self.metrics)
-        val_keys = self._get_default_tracker_keys("val", self.metrics)
-
-        self.tracker.register(train_keys, key_type="train")
-        self.tracker.register(val_keys, key_type="val")
-
-    def _get_default_tracker_keys(
-        self,
-        key_type: Literal["train", "val"],
-        metrics: list[torchmetrics.Metric] | None = None,
-    ) -> list[str]:
-        metric_list = self.metrics if metrics is None else metrics
-        keys = [f"{key_type}_loss"]
-        keys.extend([f"{key_type}_{metric._get_name()}" for metric in metric_list])
-        return keys
-
-    def _validate_metrics(self, metrics: list[torchmetrics.Metric]) -> None:
-        names = [metric._get_name() for metric in metrics]
-        duplicate_names = sorted({name for name in names if names.count(name) > 1})
-        if duplicate_names:
-            duplicates = ", ".join(duplicate_names)
-            raise ValueError(f"Metric names must be unique; found: {duplicates}")
-
-    def _reset_metrics(self, metrics: list[torchmetrics.Metric]) -> None:
-        for metric in metrics:
-            metric.reset()
-
-    def _finalize_metrics(
-        self,
-        metrics: list[torchmetrics.Metric],
-        tracker: EmberTracker,
-        key_type: Literal["train", "val"],
-    ) -> None:
-        computed_metrics: list[tuple[str, torch.Tensor]] = []
-        try:
-            for metric in metrics:
-                if not metric.update_called:
-                    continue
-                value = metric.compute()
-                if not isinstance(value, torch.Tensor) or value.numel() != 1:
-                    raise ValueError(
-                        f"{metric._get_name()} must compute a single tensor value"
-                    )
-                computed_metrics.append(
-                    (
-                        f"{key_type}_{metric._get_name()}",
-                        value.detach().reshape(()).to(self.fabric.device),
-                    )
-                )
-        finally:
-            self._reset_metrics(metrics)
-
-        for key, value in computed_metrics:
-            tracker.update(key, value, batch_size=1)
-
-    def _get_custom_validation_tracker_keys(self) -> list[str]:
-        default_val_keys = set(self._get_default_tracker_keys("val", self.metrics))
-        return [
-            key
-            for key in self.tracker.get_keys_with_type("val")
-            if key not in default_val_keys
-        ]
-
-    def _get_evaluation_tracker_keys(
-        self, metrics: list[torchmetrics.Metric]
-    ) -> list[str]:
-        eval_keys = self._get_default_tracker_keys("val", metrics)
-        eval_keys.extend(self._get_custom_validation_tracker_keys())
-        return list(dict.fromkeys(eval_keys))
+        """Register default losses; override to register custom scalars and metrics."""
+        self.tracker.register("train_loss", key_type="train")
+        self.tracker.register("val_loss", key_type="val")
 
     def _optimizer_has_pending_gradients(self, optimizer: Optimizer) -> bool:
         if self.accumulate_grad_batches <= 1:
@@ -489,12 +416,15 @@ class EmberModel:
         print(msg)
 
     @rank_zero_only
-    def _print_metric_values(self, key_type: Literal["train", "val"]) -> None:
+    def _print_metric_values(
+        self, key_type: Literal["train", "val"], epoch: int
+    ) -> None:
         metric_keys = self.tracker.get_keys_with_type(key_type)
         if not metric_keys:
             return
         for key in metric_keys:
-            print(f"{key}: {self.history[key][-1]}")
+            if self.tracker._has_epoch_value(key, epoch):
+                print(f"{key}: {self.history[key][-1]}")
 
     @final
     def fit(
@@ -555,6 +485,9 @@ class EmberModel:
             ValueError: If no training data is provided.
         """
         stage_failed = False
+        self.tracker._reset_pending()
+        self.tracker._reset_epoch()
+        self.history = self.tracker.get_history_items()
         try:
             # acquire dataloaders
             if isinstance(emberdata, EmberData):
@@ -595,10 +528,11 @@ class EmberModel:
             self.gradients_clip_val = gradients_clip_val
             self.gradients_max_norm = gradients_max_norm
 
-            self.resuming = self.epoch_count > 0
+            self.resuming = self.epoch_count > 0 or self.step_count > 0
             self._print_start_message(epochs, steps)
             step_target: int | None = None
-            epoch = self.epoch_count
+            starting_epoch = self.epoch_count
+            epoch = starting_epoch
             epochs_to_train_for = epochs
             if steps is not None:
                 if steps <= 0:
@@ -609,16 +543,15 @@ class EmberModel:
             if epochs_to_train_for is not None and epochs_to_train_for < 0:
                 raise ValueError("epochs must be non-negative")
 
-            self._reset_metrics(self.metrics)
             self.model.train()
             # main loop
             self._trigger_callbacks(
                 callbacks, "on_train_start", self.epoch_count, self.step_count
             )
             epoch_iter = (
-                range(self.epoch_count, self.epoch_count + epochs_to_train_for)
+                range(starting_epoch, starting_epoch + epochs_to_train_for)
                 if epochs_to_train_for is not None
-                else count(self.epoch_count)
+                else count(starting_epoch)
             )
             for epoch in epoch_iter:
                 if not self.should_train and not force_train:
@@ -627,7 +560,6 @@ class EmberModel:
                     self.fabric.barrier()
                     break
 
-                self._reset_metrics(self.metrics)
                 self._trigger_callbacks(
                     callbacks, "on_epoch_start", epoch, self.step_count
                 )
@@ -638,9 +570,7 @@ class EmberModel:
                     print()
                 epoch_desc = f"Epoch: {epoch}"
                 if step_target is None:
-                    final_epoch = (
-                        self.epoch_count + cast("int", epochs_to_train_for) - 1
-                    )
+                    final_epoch = starting_epoch + cast("int", epochs_to_train_for) - 1
                     epoch_desc = f"Epoch: {epoch}/{final_epoch}"
                 train_progress_total = (
                     batch_limit_train if batch_limit_train > 0 else len(train_data)
@@ -664,18 +594,8 @@ class EmberModel:
                             self.step_count,
                             batch_idx,
                         )
-                        train_step_out = self.train_step(batch, batch_idx, epoch)
+                        self.train_step(batch, batch_idx, epoch)
                         completed_step = self.step_count + 1
-                        if train_step_out is not None:
-                            loss, y_pred = train_step_out
-                            self.tracker.update(
-                                "train_loss",
-                                loss.detach(),
-                                batch_size=y_pred.shape[0],
-                                step=completed_step,
-                            )
-                            for metric in self.metrics:
-                                self.update_metric(metric, batch, y_pred)
                         if self.log_lr:
                             for i, opt in enumerate(self.optimizers):
                                 self.tracker.update(
@@ -703,11 +623,12 @@ class EmberModel:
                         raise ValueError("No training batches were processed")
 
                 self._flush_pending_gradients()
-                self._finalize_metrics(self.metrics, self.tracker, "train")
-                self.tracker.sync_epoch(key_type="train", step=self.step_count)
+                self.tracker.sync_epoch(
+                    key_type="train", epoch=epoch, step=self.step_count
+                )
                 self.history = self.tracker.get_history_items()
                 if show_metrics:
-                    self._print_metric_values(key_type="train")
+                    self._print_metric_values(key_type="train", epoch=epoch)
                 self._trigger_callbacks(
                     callbacks, "on_train_epoch_end", epoch, self.step_count
                 )
@@ -720,7 +641,6 @@ class EmberModel:
                 # otherwise run the validation loop normally
                 else:
                     active_val_data = cast("DataLoader", val_data)
-                    self._reset_metrics(self.metrics)
                     self._trigger_callbacks(
                         callbacks, "on_validation_epoch_start", epoch, self.step_count
                     )
@@ -745,7 +665,7 @@ class EmberModel:
                                 self.step_count,
                                 batch_idx,
                             )
-                            val_step_out = self.val_step(batch, batch_idx, epoch)
+                            self.val_step(batch, batch_idx, epoch)
                             self._trigger_callbacks(
                                 callbacks,
                                 "on_validation_batch_end",
@@ -753,21 +673,15 @@ class EmberModel:
                                 self.step_count,
                                 batch_idx,
                             )
-                            if val_step_out is not None:
-                                loss, y_pred = val_step_out
-                                self.tracker.update(
-                                    "val_loss", loss, batch_size=y_pred.shape[0]
-                                )
-                                for metric in self.metrics:
-                                    self.update_metric(metric, batch, y_pred)
                             if progress_bar is not None:
                                 progress_bar.update()
 
-                    self._finalize_metrics(self.metrics, self.tracker, "val")
-                    self.tracker.sync_epoch(key_type="val", step=self.step_count)
+                    self.tracker.sync_epoch(
+                        key_type="val", epoch=epoch, step=self.step_count
+                    )
                     self.history = self.tracker.get_history_items()
                     if show_metrics:
-                        self._print_metric_values(key_type="val")
+                        self._print_metric_values(key_type="val", epoch=epoch)
                     # end of validation loop
                     self._trigger_callbacks(
                         callbacks, "on_validation_epoch_end", epoch, self.step_count
@@ -777,6 +691,7 @@ class EmberModel:
                 self.model.train()
                 self.scheduler_step()
                 self.tracker.log("epoch", epoch, self.step_count)
+                self.epoch_count = epoch + 1
                 self._trigger_callbacks(
                     callbacks, "on_epoch_end", epoch, self.step_count
                 )
@@ -786,13 +701,12 @@ class EmberModel:
                     break
 
             self._trigger_callbacks(callbacks, "on_train_end", epoch, self.step_count)
-            self.epoch_count = self.tracker.get_history_length()
 
         except BaseException:
             stage_failed = True
             raise
         finally:
-            self._reset_metrics(self.metrics)
+            self.tracker._reset_pending()
             if isinstance(emberdata, EmberData):
                 if stage_failed:
                     with contextlib.suppress(Exception):
@@ -804,19 +718,20 @@ class EmberModel:
     def evaluate(
         self,
         eval_data: DataLoader | None = None,
-        metrics: list[torchmetrics.Metric] | None = None,
         emberdata: EmberData | None = None,
         setup_dataloader_fabric: bool = True,
         show_metrics: bool = True,
         show_progress_bar: bool = False,
+        *,
+        eval_tracker: EmberTracker | None = None,
     ) -> dict[str, list[float]]:
         """
         Evaluates the model on the provided data and returns the computed metrics.
 
         Args:
             eval_data: `DataLoader` for evaluation.
-            metrics: Optional list of torchmetrics Metrics to compute. Defaults to
-                the metrics registered at construction time.
+            eval_tracker: Optional template whose validation registrations are cloned.
+                Defaults to this model's tracker. History and pending state are ignored.
             emberdata: Optional `EmberData` instance. Takes priority over
                 `eval_data`.
             setup_dataloader_fabric: Whether to set up the dataloader with Fabric.
@@ -832,7 +747,7 @@ class EmberModel:
         Raises:
             ValueError: If no evaluation data is provided.
         """
-        active_metrics: list[torchmetrics.Metric] = []
+        active_tracker: EmberTracker | None = None
         stage_failed = False
         try:
             if isinstance(emberdata, EmberData):
@@ -847,16 +762,8 @@ class EmberModel:
             eval_data_len = self._require_non_empty_dataloader(
                 eval_data, "Evaluation dataloader"
             )
-            active_metrics = (
-                self.fabric.to_device(metrics) if metrics is not None else self.metrics
-            )
-            self._validate_metrics(active_metrics)
-            self._reset_metrics(active_metrics)
-
-            eval_tracker = EmberTracker(fabric=self.fabric, fabric_logging=False)
-            eval_tracker.register(
-                self._get_evaluation_tracker_keys(active_metrics), key_type="val"
-            )
+            template = self.tracker if eval_tracker is None else eval_tracker
+            active_tracker = template._clone_for_evaluation(self.fabric)
 
             self.model.eval()
             with (
@@ -868,24 +775,17 @@ class EmberModel:
                 torch.inference_mode(),
             ):
                 for batch_idx, batch in enumerate(eval_data):
-                    eval_step_out = self.eval_step(batch, batch_idx, eval_tracker)
-                    if eval_step_out is not None:
-                        loss, y_pred = eval_step_out
-                        eval_tracker.update(
-                            "val_loss", loss, batch_size=y_pred.shape[0]
-                        )
-                        for metric in active_metrics:
-                            self.update_metric(metric, batch, y_pred)
+                    self.eval_step(batch, batch_idx, active_tracker)
                     if progress_bar is not None:
                         progress_bar.update()
 
-            self._finalize_metrics(active_metrics, eval_tracker, "val")
-            eval_tracker.sync_epoch(key_type="val")
-            metric_dict = eval_tracker.get_history_items()
+            active_tracker.sync_epoch(key_type="val")
+            metric_dict = active_tracker.get_history_items()
 
             if show_metrics and self.fabric.is_global_zero:
                 for k, v in metric_dict.items():
-                    print(k, v)
+                    if v:
+                        print(k, v)
                 print()
             return metric_dict
 
@@ -893,7 +793,8 @@ class EmberModel:
             stage_failed = True
             raise
         finally:
-            self._reset_metrics(active_metrics)
+            if active_tracker is not None:
+                active_tracker._reset_pending()
             if isinstance(emberdata, EmberData):
                 if stage_failed:
                     with contextlib.suppress(Exception):
@@ -1014,7 +915,7 @@ class EmberModel:
         """
         Saves a checkpoint to file using `fabric.save()`.
         Stores the model state, optimizer state(s), scheduler state(s), tracker
-        history, and step count.
+        completed history, and epoch/step counts. Pending reporting is not saved.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1022,6 +923,7 @@ class EmberModel:
             "model": self.model,
             "tracker": self.tracker,
             "step_count": self.step_count,
+            "epoch_count": self.epoch_count,
         }
         for i, opt in enumerate(self.optimizers):
             state[f"optimizer_{i}"] = opt
@@ -1034,9 +936,11 @@ class EmberModel:
         """
         Loads a checkpoint with `fabric.load()`.
         Restores the model state, optimizer state(s), scheduler state(s), tracker
-        history, and step count.
+        completed history, and epoch/step counts. Pending reporting is not saved.
+        Legacy checkpoints infer completed epochs from the longest saved history.
         """
         checkpoint = self.fabric.load(path)
+        self.tracker._normalize_state_dict(checkpoint["tracker"])
         state: dict[str, Any] = {
             "model": self.model,
             "tracker": self.tracker,
@@ -1052,7 +956,13 @@ class EmberModel:
         self.fabric.load(path, state)
         self.step_count = state["step_count"]
         self.history = self.tracker.get_history_items()
-        self.epoch_count = self.tracker.get_history_length()
+        self.epoch_count = checkpoint.get(
+            "epoch_count",
+            max(
+                (len(values) for values in checkpoint["tracker"]["history"].values()),
+                default=0,
+            ),
+        )
         self.resuming = True
         self.should_train = True
         if self.fabric.is_global_zero:

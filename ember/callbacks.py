@@ -333,7 +333,7 @@ class ModelCheckpoint(EmberCallback):
             )
             embermodel.save_checkpoint(path=periodic_path)
 
-        if not embermodel.history.get(self.monitor):
+        if not embermodel.tracker._has_epoch_value(self.monitor, epoch):
             return  # monitored metric not available (e.g. validation was skipped)
 
         latest_metric = embermodel.history[self.monitor][-1]
@@ -424,7 +424,7 @@ class EarlyStopping(EmberCallback):
 
         Args:
             monitor: The metric name to monitor: "val_loss",
-                "val_{torchmetric_name}", etc.
+                "val_accuracy", etc.
             patience: The number of epochs to count improvements over. If the metric
                 has not improved after this many epochs, training is stopped.
             mode: One of "min" or "max"; whether to treat smaller or larger values
@@ -480,7 +480,7 @@ class EarlyStopping(EmberCallback):
         self, embermodel: "EmberModel", epoch: int = 0, step: int = 0
     ) -> None:
         monitor_history = embermodel.history.get(self.monitor, [])
-        if not monitor_history:
+        if not embermodel.tracker._has_epoch_value(self.monitor, epoch):
             return  # monitored metric not available (e.g. validation was skipped)
         latest_metric = monitor_history[-1]
         has_improved = False
@@ -560,7 +560,7 @@ class OptunaTrialPruner(EmberCallback):
         self, embermodel: "EmberModel", epoch: int = 0, step: int = 0
     ) -> None:
         monitor_history = embermodel.history.get(self.monitor, [])
-        if not monitor_history:
+        if not embermodel.tracker._has_epoch_value(self.monitor, epoch):
             return  # monitored metric not available (e.g. validation was skipped)
         self.trial.report(monitor_history[-1], step=epoch)
         if self.trial.should_prune():

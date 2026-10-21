@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch.utils.data import DataLoader, TensorDataset
-from torchmetrics import Accuracy
 
 from ember import EmberData, EmberModel
 
@@ -68,7 +67,6 @@ def model_factory() -> ModelFactory:
         model: nn.Module | None = None,
         model_class: type[EmberModel] = EmberModel,
         aug_fn: nn.Module | None = None,
-        metrics: bool = True,
         no_validation: bool = False,
         scheduler: bool = True,
     ) -> EmberModel:
@@ -86,16 +84,12 @@ def model_factory() -> ModelFactory:
             if scheduler
             else None
         )
-        metric_list = (
-            [Accuracy(task="multiclass", num_classes=NUM_CLASSES)] if metrics else None
-        )
         return model_class(
             fabric=fabric,
             model=module,
             optimizers=[optimizer],
             schedulers=schedulers,
             loss_fn=nn.CrossEntropyLoss(),
-            metrics=metric_list,
             aug_fn=aug_fn,
             no_validation=no_validation,
         )

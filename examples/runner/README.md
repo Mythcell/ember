@@ -31,6 +31,46 @@ receive that result with its static type. The CLI discards results. Exported run
 instances retain their existing config even when the CLI supplies `-c`; the CLI
 injects a config only when `runner.cfg` is `None`.
 
+## Reporting losses and TorchMetrics
+
+`EmberModel(..., metrics=[...])` configures metrics for default supervised steps.
+Ember registers independent training and validation instances with the tracker under
+names such as `val_MulticlassAccuracy` for callback and scheduler monitors.
+
+Custom training, validation and evaluation steps report through their tracker and
+return `None`. Manual scalars accumulate weighted stage means; named TorchMetrics
+use a separate API:
+
+```python
+tracker.register("custom_loss", key_type="train")
+tracker.update("custom_loss", loss, batch_size=batch_size)
+
+tracker.register_torchmetric("train_accuracy", metric, key_type="train")
+tracker.update_torchmetric("train_accuracy", predictions, targets)
+```
+
+Use a separate metric instance for each key. The tracker computes scalar metric
+results once per stage and resets pending state. Untouched keys record zero;
+skipped validation records nothing. Distributed metric updates must occur on all
+ranks or none.
+
+Default steps call `report_step(tracker, key_type, loss, y_pred, y)` with the actual
+loss targets, including paired augmentation. Override it to customise reporting;
+`super().report_step(...)` records loss and updates constructor metrics. Custom
+steps can update their tracker directly, as in the [VAE example](../mnist_vae/run.py).
+Evaluation steps use the supplied `eval_tracker`; prediction steps return outputs.
+
+### Evaluation and checkpoints
+
+`evaluate()` clones the tracker's validation registrations into an isolated
+tracker. Use `eval_tracker=` to supply another template; reporting calls must
+match its keys. The template's history and pending state remain untouched.
+
+Checkpoints restore scalar registrations automatically and metric histories for
+configured TorchMetrics. Unconfigured metrics are skipped; new metrics start with
+empty histories. Pending accumulators are discarded. Epoch progress is stored
+explicitly. Checkpoints without an epoch count use the longest saved history.
+
 ## Instantiation
 
 `ember.utils.instantiate()` calls a class or factory selected by Python code or
@@ -95,19 +135,3 @@ their original exceptions. Call-time `TypeError` receives target context with th
 original exception chained; other call exceptions propagate unchanged. Importing
 and calling targets executes Python code, so specifications and arguments must
 be trusted.
-
-### Migrating existing calls
-
-- Move positional helper controls to named arguments: use
-  `instantiate(target, params=config, local_path=path, expected_type=Base)`.
-  Positional arguments after the target now go to the target itself, including
-  mappings.
-- Replace `class_spec=` with `target=`.
-- Replace string aliases such as `nn.CrossEntropyLoss` with
-  `torch.nn.CrossEntropyLoss`, or pass `nn.CrossEntropyLoss` directly.
-- Factory functions are now valid targets. Existing non-callable attributes now
-  raise `TypeError` instead of the former class-only `ImportError`.
-
-The example's optimiser settings now use `optimizer_type` and `optimizer_params`;
-its former top-level `lr` moves to `optimizer_params.lr`. These names are chosen
-by the example and have no special meaning to Ember.

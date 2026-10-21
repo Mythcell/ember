@@ -8,9 +8,10 @@ import optuna
 import pytest
 import torch
 from conftest import ModelFactory, SyntheticData, make_dataset
+from lightning import Fabric
 from torch.utils.data import DataLoader
 
-from ember import EmberModel
+from ember import EmberModel, EmberTracker
 from ember.callbacks import (
     EarlyStopping,
     EmberCallback,
@@ -63,13 +64,30 @@ def test_early_stopping_validation() -> None:
         EarlyStopping(monitor="val_loss", warmup_epochs=-1)
 
 
+def record_value(model: EmberModel, key: str, value: float, epoch: int) -> None:
+    model.tracker.update(key, torch.tensor(value, device=model.fabric.device))
+    model.tracker.sync_epoch(keys=key, epoch=epoch)
+    model.history = model.tracker.get_history_items()
+
+
 def fake_embermodel(history: dict[str, list[float]]) -> EmberModel:
-    value = SimpleNamespace(
-        history=history,
-        should_train=True,
-        fabric=SimpleNamespace(is_global_zero=True),
+    fabric = Fabric(accelerator="cpu", devices=1)
+    tracker = EmberTracker(fabric, fabric_logging=False)
+    model = cast(
+        "EmberModel",
+        SimpleNamespace(
+            history={},
+            tracker=tracker,
+            should_train=True,
+            fabric=fabric,
+        ),
     )
-    return cast("EmberModel", value)
+    for key, values in history.items():
+        tracker.register(key, "val")
+        for epoch, value in enumerate(values):
+            record_value(model, key, value, epoch)
+    model.history = tracker.get_history_items()
+    return model
 
 
 def test_early_stopping_patience() -> None:
@@ -78,7 +96,7 @@ def test_early_stopping_patience() -> None:
     callback.on_train_start(model)
 
     for epoch, loss in enumerate((1.0, 0.5, 0.5)):
-        model.history["val_loss"].append(loss)
+        record_value(model, "val_loss", loss, epoch)
         callback.on_epoch_end(model, epoch=epoch)
         if epoch < 2:
             assert model.should_train
@@ -99,7 +117,7 @@ def test_early_stopping_warmup() -> None:
     callback.on_train_start(model)
 
     for epoch, loss in enumerate((float("nan"), 0.1, 1.0, 1.0)):
-        model.history["val_loss"].append(loss)
+        record_value(model, "val_loss", loss, epoch)
         callback.on_epoch_end(model, epoch=epoch)
         if epoch < 3:
             assert model.should_train
@@ -117,6 +135,24 @@ def test_early_stopping_resume() -> None:
 
     assert callback.best_value == 1.0
     assert callback.best_value_epoch == 2
+
+
+def test_stale_monitors(model_factory: ModelFactory, tmp_path: Path) -> None:
+    model = model_factory(scheduler=False)
+    record_value(model, "val_loss", 0.5, 0)
+    trial = MagicMock()
+    pruner = OptunaTrialPruner(trial, "val_loss")
+    pruner.on_epoch_end(model, epoch=1)
+    trial.report.assert_not_called()
+    stopping = EarlyStopping("val_loss", patience=0, stopping_threshold=1.0)
+    stopping.on_train_start(model, epoch=1)
+    stopping.on_epoch_end(model, epoch=1)
+    assert model.should_train
+    checkpoint = make_checkpoint_callback(tmp_path, save_every_n_epochs=1)
+    checkpoint.on_train_start(model, epoch=1)
+    checkpoint.on_epoch_end(model, epoch=1)
+    assert len(list(tmp_path.glob("*_periodic.ckpt"))) == 1
+    assert list(tmp_path.glob("model-epoch_00001.ckpt")) == []
 
 
 @pytest.mark.parametrize(
@@ -140,7 +176,7 @@ def test_early_stopping_threshold(
     callback.on_train_start(model)
 
     for epoch, value in enumerate(metric_history):
-        model.history["metric"].append(value)
+        record_value(model, "metric", value, epoch)
         callback.on_epoch_end(model, epoch=epoch)
 
     assert not model.should_train
@@ -272,7 +308,7 @@ class RecordingCallback(EmberCallback):
 def test_callback_lifecycle(
     model_factory: ModelFactory,
 ) -> None:
-    model = model_factory(metrics=False, scheduler=False)
+    model = model_factory(scheduler=False)
     callback = RecordingCallback()
 
     model.fit(
@@ -306,7 +342,7 @@ def test_callbacks_without_validation(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
-    model = model_factory(no_validation=True, metrics=False, scheduler=False)
+    model = model_factory(no_validation=True, scheduler=False)
     recording_callback = RecordingCallback()
     callbacks: list[EmberCallback] = [
         recording_callback,
@@ -353,10 +389,15 @@ def test_checkpoint_top_k(
         callback.on_train_start(model)
 
         for epoch, value in enumerate(history):
-            model.history["val_loss"].append(value)
+            record_value(model, "val_loss", value, epoch)
             callback.on_epoch_end(model, epoch=epoch)
 
-        assert callback.best_checkpoints == expected
+        assert [score for score, _ in callback.best_checkpoints] == pytest.approx(
+            [score for score, _ in expected]
+        )
+        assert [epoch for _, epoch in callback.best_checkpoints] == [
+            epoch for _, epoch in expected
+        ]
         assert sorted(path.name for path in save_dir.glob("*.ckpt")) == [
             "model-epoch_00000.ckpt",
             "model-epoch_00004.ckpt",
@@ -368,7 +409,7 @@ def test_checkpoint_cadence(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
-    model = model_factory(no_validation=True, metrics=False, scheduler=False)
+    model = model_factory(no_validation=True, scheduler=False)
     callback = ModelCheckpoint(
         monitor="train_loss",
         save_dir=tmp_path,
@@ -396,13 +437,16 @@ def test_checkpoint_cadence(
     ]
     assert callback.last_ckpt_path == tmp_path / "model-epoch_00002_last.ckpt"
     model.load_last_checkpoint()
+    assert model.epoch_count == 3
+    model.load_checkpoint(tmp_path / "model-epoch_00000_periodic.ckpt")
+    assert model.epoch_count == 1
 
 
 def test_best_checkpoints_disabled(
     model_factory: ModelFactory,
     tmp_path: Path,
 ) -> None:
-    model = model_factory(no_validation=True, metrics=False, scheduler=False)
+    model = model_factory(no_validation=True, scheduler=False)
     callback = ModelCheckpoint(
         monitor="train_loss",
         save_dir=tmp_path,
@@ -477,7 +521,7 @@ def test_pruner_reporting() -> None:
     callback = OptunaTrialPruner(reporting_trial, "val_loss")
     callback.on_train_start(model)
     callback.on_epoch_end(model, epoch=1)
-    reporting_trial.report.assert_called_once_with(0.4, step=1)
+    reporting_trial.report.assert_called_once_with(pytest.approx(0.4), step=1)
 
 
 def test_pruner_exception() -> None:
@@ -516,7 +560,6 @@ def test_progress_cleanup_on_error(
     RecordingTqdm.instances = []
     model = model_factory(
         model_class=FailingTrainModel,
-        metrics=False,
         scheduler=False,
     )
     with pytest.raises(RuntimeError, match="train failed"):

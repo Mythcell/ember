@@ -149,7 +149,7 @@ def test_data_cleanup(
     model_factory: ModelFactory,
 ) -> None:
     data = CleanupData()
-    model = model_factory(metrics=False, scheduler=False)
+    model = model_factory(scheduler=False)
 
     model.fit(
         emberdata=data,
@@ -199,7 +199,6 @@ def test_data_cleanup_on_error(
         data = CleanupData()
         model = model_factory(
             model_class=model_class,
-            metrics=False,
             scheduler=False,
         )
         with pytest.raises(RuntimeError, match=f"{stage} failed"):
@@ -212,7 +211,6 @@ def test_cleanup_error_precedence(model_factory: ModelFactory) -> None:
     failing_stage_data = FailingCleanupData()
     failing_model = model_factory(
         model_class=FailingTrainModel,
-        metrics=False,
         scheduler=False,
     )
 
@@ -227,7 +225,7 @@ def test_cleanup_error_precedence(model_factory: ModelFactory) -> None:
 
     successful_stage_data = FailingCleanupData()
     with pytest.raises(RuntimeError, match="cleanup failed"):
-        model_factory(metrics=False, scheduler=False).fit(
+        model_factory(scheduler=False).fit(
             emberdata=successful_stage_data,
             epochs=1,
             show_metrics=False,

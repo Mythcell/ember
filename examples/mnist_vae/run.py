@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from lightning import Fabric
 from torchvision.transforms import v2
 
-from ember import EmberModel, EmberRunner
+from ember import EmberModel, EmberRunner, EmberTracker
 from ember.mnist import EmberMNIST
 
 if TYPE_CHECKING:
@@ -109,7 +109,7 @@ class VAEModel(EmberModel):
 
     def train_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int, epoch: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> None:
         (optimizer, *_) = self.optimizers
         is_accumulating = (batch_idx + 1) % self.accumulate_grad_batches != 0
 
@@ -123,20 +123,24 @@ class VAEModel(EmberModel):
             optimizer.step()
             optimizer.zero_grad()
 
-        return loss, x_recon
+        self.tracker.update(
+            "train_loss", loss, batch_size=x_recon.shape[0], step=self.step_count + 1
+        )
 
     def val_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int, epoch: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._step(batch)
+    ) -> None:
+        loss, x_recon = self._step(batch)
+        self.tracker.update("val_loss", loss, batch_size=x_recon.shape[0])
 
     def eval_step(
         self,
         batch: tuple[torch.Tensor, ...] | tuple,
         batch_idx: int,
-        eval_tracker=None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._step(batch)
+        eval_tracker: EmberTracker,
+    ) -> None:
+        loss, x_recon = self._step(batch)
+        eval_tracker.update("val_loss", loss, batch_size=x_recon.shape[0])
 
     def pred_step(
         self, batch: tuple[torch.Tensor, ...] | tuple, batch_idx: int
