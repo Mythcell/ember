@@ -2,52 +2,106 @@ import contextlib
 import importlib
 import importlib.util
 import inspect
+import keyword
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, overload
+
+
+@overload
+def instantiate[T](
+    target: str | Callable[..., Any],
+    *args: Any,
+    params: Mapping[str, Any] | None = None,
+    local_path: Path | None = None,
+    expected_type: type[T],
+) -> T: ...
+
+
+@overload
+def instantiate[T](
+    target: Callable[..., T],
+    *args: Any,
+    params: Mapping[str, Any] | None = None,
+    local_path: Path | None = None,
+    expected_type: None = None,
+) -> T: ...
+
+
+@overload
+def instantiate(
+    target: str,
+    *args: Any,
+    params: Mapping[str, Any] | None = None,
+    local_path: Path | None = None,
+    expected_type: None = None,
+) -> Any: ...
 
 
 def instantiate(
-    class_spec: str,
-    params: dict[str, Any] | None = None,
+    target: str | Callable[..., Any],
+    *args: Any,
+    params: Mapping[str, Any] | None = None,
     local_path: Path | None = None,
     expected_type: type | None = None,
 ) -> Any:
-    """Instantiate a class from a `module.Class` specification.
+    """Call a target supplied directly or as an absolute `module.attribute` path.
 
-    Importing the module and constructing the class can execute arbitrary code. Only
+    Importing the module and calling the target can execute arbitrary code. Only
     use trusted specifications and parameters.
 
     Args:
-        class_spec: Dotted class specification, such as `torch.nn.ReLU`.
-        params: Keyword arguments passed to the constructor.
-        local_path: Optional directory used to discover a local module.
-        expected_type: Optional required base type for the resolved class.
+        target: Callable or dotted path, such as `torch.nn.ReLU`.
+        *args: Positional arguments passed to the target.
+        params: Keyword arguments passed to the target without converting values.
+        local_path: Optional directory for local string targets; ignored for callables.
+        expected_type: Optional runtime-checkable base type required of the result.
 
     Raises:
-        ValueError: If `class_spec` does not contain a module and class name.
-        ImportError: If the attribute does not resolve to a class.
-        TypeError: If the class fails the type guard or its constructor rejects the
-            supplied parameters.
+        ValueError: If the string target is not an absolute dotted identifier path.
+        ImportError: If importing fails or the target attribute is missing.
+        TypeError: If the target is not callable, a type guard fails, or the call
+            raises TypeError.
     """
-    params = {} if params is None else params
-    module_name, sep, attr = class_spec.rpartition(".")
-    if not all((module_name, sep, attr)):
-        raise ValueError(f"Invalid class_spec: {class_spec}")
+    if isinstance(target, str):
+        parts = target.split(".")
+        if len(parts) < 2 or any(
+            not part.isidentifier() or keyword.iskeyword(part) for part in parts
+        ):
+            raise ValueError(f"Invalid target: {target}")
+        module_name, _, attr = target.rpartition(".")
+        module = _import_module(module_name, local_path)
+        try:
+            resolved_target = getattr(module, attr)
+        except AttributeError as exc:
+            raise ImportError(f"Target attribute not found: {target}") from exc
+        target_name = target
+    else:
+        resolved_target = target
+        target_name = getattr(target, "__qualname__", type(target).__qualname__)
 
-    module = _import_module(module_name, local_path)
-    cls = getattr(module, attr, None)
-    if cls is None or not inspect.isclass(cls):
-        raise ImportError(f"{class_spec} is not a class")
-
-    if expected_type and not issubclass(cls, expected_type):
-        raise TypeError(f"{class_spec} must inherit from {expected_type.__name__}")
+    if not callable(resolved_target):
+        raise TypeError(f"{target_name} is not callable")
+    if (
+        expected_type is not None
+        and inspect.isclass(resolved_target)
+        and not issubclass(resolved_target, expected_type)
+    ):
+        raise TypeError(f"{target_name} must inherit from {expected_type.__name__}")
 
     try:
-        return cls(**params)
+        result = resolved_target(*args, **({} if params is None else params))
     except TypeError as exc:
-        raise TypeError(f"Failed to instantiate {class_spec}: {exc}") from exc
+        raise TypeError(f"Failed to instantiate {target_name}: {exc}") from exc
+
+    if expected_type is not None and not isinstance(result, expected_type):
+        raise TypeError(
+            f"{target_name} must return an instance of {expected_type.__name__}; "
+            f"got {type(result).__name__}"
+        )
+    return result
 
 
 @contextlib.contextmanager
@@ -63,17 +117,10 @@ def _temp_sys_path(path: Path):
 
 
 def _import_module(name: str, local_path: Path | None) -> ModuleType:
-    """
-    Import the module with the given name. Checks sys.modules and any import aliases.
-    Supports local modules imports with `local_path`.
-
-    Args:
-        name: Module name
-        local_path: Optional directory path for local module discovery.
-    """
-    if name.startswith("."):
+    """Import a module, preferring a matching file or package at local_path."""
+    if local_path is None:
         return importlib.import_module(name)
-    if local_path:
+    with _temp_sys_path(local_path):
         local_module_path = _resolve_local_module_path(local_path, name)
         if local_module_path is not None:
             cached_module = sys.modules.get(name)
@@ -84,8 +131,7 @@ def _import_module(name: str, local_path: Path | None) -> ModuleType:
                     name, local_path, local_module_path
                 )
             try:
-                with _temp_sys_path(local_path):
-                    module = importlib.import_module(name)
+                module = importlib.import_module(name)
             except ModuleNotFoundError as exc:
                 if not _missing_requested_module(exc, name):
                     raise
@@ -95,24 +141,6 @@ def _import_module(name: str, local_path: Path | None) -> ModuleType:
             if _module_matches_path(module, local_module_path):
                 return module
             return _load_local_module_with_parents(name, local_path, local_module_path)
-    # Check for names already registered under this name (e.g. `import torch.nn`)
-    if name in sys.modules:
-        return sys.modules[name]
-    # Explicitly check the stack to find aliases (e.g. `import torch.nn as nn`)
-    frame = inspect.currentframe()
-    try:
-        while frame is not None:
-            for ns in (frame.f_globals, frame.f_locals):
-                candidate = ns.get(name)
-                if isinstance(candidate, ModuleType):
-                    return candidate
-            frame = frame.f_back
-    finally:
-        del frame
-    if not local_path:
-        return importlib.import_module(name)
-    # Temporarily add local_path to sys.path so local modules are discoverable.
-    with _temp_sys_path(local_path):
         return importlib.import_module(name)
 
 

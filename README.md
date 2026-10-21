@@ -8,7 +8,7 @@ Key features:
 
 - Flexible `EmberModel` model wrapper / trainer combo inspired by Keras.
 - Easily implement custom PyTorch logic by overriding `train_step`, `val_step`, etc.
-- Minimalist CLI for running `EmberRunner` scripts with optional YAML configs and Hydra-style object instantiation.
+- Minimalist CLI for running `EmberRunner` scripts with optional YAML configs and config-selected object construction.
 - Custom `EmberCallback` callback system with full lifecycle hooks.
 - Built-in `EmberTracker` metric/history tracking inspired by Keras' `History` object.
 - Lightweight, optional `EmberData` container inspired by Lightning's `LightningDataModule`.

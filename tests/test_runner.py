@@ -86,7 +86,7 @@ class MyRunner(EmberRunner):
     def run(self):
         model: nn.Module = instantiate(
             self.cfg.model_cls,
-            self.cfg.model_params,
+            params=self.cfg.model_params,
             local_path=self.script_dir,
             expected_type=nn.Module,
         )

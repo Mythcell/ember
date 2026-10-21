@@ -13,13 +13,7 @@ with OmegaConf and injects `self.cfg`, `self.cfg_path`, `self.script_dir`, and
 The runner uses `self.script_dir` for local imports and data paths, so the
 example can be launched from outside the example directory.
 
-The example also demonstrates `ember.utils.instantiate()`:
-
-- `models.SmallCNN` is resolved from `models.py` relative to the runner script.
-- `nn.CrossEntropyLoss` and `torchmetrics.Accuracy` are resolved from imported
-  modules.
-- `expected_type` checks that config specs produce the expected object type.
-- `EmberMNIST(root=...)` stores downloaded data in `examples/runner/data`.
+`EmberMNIST(root=...)` stores downloaded data in `examples/runner/data`.
 
 Configs are optional; runners can also be plain script entrypoints with hardcoded
 Python construction.
@@ -36,3 +30,84 @@ declares `EmberRunner[ResultType]` and annotates `run() -> ResultType`; direct c
 receive that result with its static type. The CLI discards results. Exported runner
 instances retain their existing config even when the CLI supplies `-c`; the CLI
 injects a config only when `runner.cfg` is `None`.
+
+## Instantiation
+
+`ember.utils.instantiate()` calls a class or factory selected by Python code or
+configuration. Projects choose their own config structure; Ember interprets no
+reserved config keys and does not recursively instantiate values.
+
+The runner supplies the model's live parameters to its configured optimiser:
+
+```python
+from torch.optim import Optimizer
+
+from ember.utils import instantiate
+
+optimizer = instantiate(
+    self.cfg.optimizer_type,
+    model.parameters(),
+    params=self.cfg.optimizer_params,
+    expected_type=Optimizer,
+)
+```
+
+The target is called once with the supplied positional arguments and keyword
+arguments from `params`. Ordinary mappings and OmegaConf `DictConfig` values are
+accepted. The helper does not mutate the mapping or convert nested values; the
+called target can mutate objects it receives through normal Python references.
+Keyword-only dependencies can be supplied with ordinary dictionary construction,
+such as `params={**cfg.decoder_params, "encoder": encoder}`. Duplicate positional
+and keyword arguments raise the target's normal `TypeError`, with added context.
+Constructor keywords named `params`, `local_path` or `expected_type` belong inside
+the `params` mapping.
+
+String targets must be absolute dotted Python identifiers, such as
+`torch.nn.CrossEntropyLoss` or `torchmetrics.Accuracy`. Ember imports the module
+before the final dot and retrieves the named attribute. Caller aliases, relative
+paths, bare names and nested attribute traversal are not supported. Classes and
+factories can also be passed directly:
+
+```python
+activation = instantiate(nn.ReLU, params={"inplace": True})
+model = instantiate(build_model, params=cfg.model_params, expected_type=nn.Module)
+```
+
+`expected_type` requires a runtime-checkable class or base type, not a
+parameterised typing expression. An incompatible class is rejected before its
+constructor runs; every guarded result is checked after the call. A factory can
+therefore run before its result is rejected. With `expected_type`, the static
+result type is the required type. Otherwise, direct callables retain their
+inferred return type, and string targets return `Any`. Constructor arguments are
+validated by Python at runtime.
+
+For local strings such as `models.SmallCNN`, the runner explicitly supplies
+`local_path=self.script_dir`. A matching local module or package takes precedence
+over a cached target from another directory. Matching-origin modules are reused;
+without a local match, normal imports apply with the directory temporarily
+available. Python's dependency cache remains process-wide: switching between
+same-named packages can retain dependencies from the earlier directory.
+`local_path` is ignored for direct callables.
+
+Malformed strings raise `ValueError`; missing attributes raise `ImportError`;
+non-callable targets and type mismatches raise `TypeError`. Import failures retain
+their original exceptions. Call-time `TypeError` receives target context with the
+original exception chained; other call exceptions propagate unchanged. Importing
+and calling targets executes Python code, so specifications and arguments must
+be trusted.
+
+### Migrating existing calls
+
+- Move positional helper controls to named arguments: use
+  `instantiate(target, params=config, local_path=path, expected_type=Base)`.
+  Positional arguments after the target now go to the target itself, including
+  mappings.
+- Replace `class_spec=` with `target=`.
+- Replace string aliases such as `nn.CrossEntropyLoss` with
+  `torch.nn.CrossEntropyLoss`, or pass `nn.CrossEntropyLoss` directly.
+- Factory functions are now valid targets. Existing non-callable attributes now
+  raise `TypeError` instead of the former class-only `ImportError`.
+
+The example's optimiser settings now use `optimizer_type` and `optimizer_params`;
+its former top-level `lr` moves to `optimizer_params.lr`. These names are chosen
+by the example and have no special meaning to Ember.
