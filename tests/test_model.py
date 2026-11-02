@@ -181,6 +181,40 @@ def test_fit_history(
     assert model.history["lr_0"]
 
 
+@pytest.mark.parametrize(
+    "val_loss_fn", [None, nn.L1Loss()], ids=["default", "override"]
+)
+def test_validation_objective(val_loss_fn: nn.Module | None) -> None:
+    module = FixedLogitModel()
+    loss_fn = nn.MSELoss()
+    model = EmberModel(
+        fabric=Fabric(devices=1, accelerator="auto"),
+        model=module,
+        optimizers=[torch.optim.SGD(module.parameters(), lr=0)],
+        loss_fn=loss_fn,
+        val_loss_fn=val_loss_fn,
+    )
+    inputs = torch.tensor([[1.0], [2.0], [4.0]])
+    targets = torch.zeros_like(inputs)
+    data = DataLoader(TensorDataset(inputs, targets), batch_size=2)
+
+    model.fit(
+        train_data=data,
+        val_data=data,
+        epochs=1,
+        show_metrics=False,
+        show_progress_bar=False,
+    )
+    result = model.evaluate(data, show_metrics=False)
+
+    expected_train = loss_fn(inputs, targets).item()
+    objective = loss_fn if val_loss_fn is None else val_loss_fn
+    expected_val = objective(inputs, targets).item()
+    assert model.history["train_loss"] == pytest.approx([expected_train])
+    assert model.history["val_loss"] == pytest.approx([expected_val])
+    assert result["val_loss"] == pytest.approx([expected_val])
+
+
 @pytest.mark.parametrize("automatic", [False, True])
 def test_metric_lifecycle(automatic: bool) -> None:
     metric = MulticlassF1Score(num_classes=2, average="macro")

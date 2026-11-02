@@ -42,12 +42,14 @@ class EmberModel:
         metrics: list[Metric] | None = None,
         aug_fn: nn.Module | None = None,
         schedulers: list[LRScheduler] | None = None,
+        *,
         setup_fabric: bool = True,
         log_lr: Literal["auto"] | bool = "auto",
         random_seed: int | None = None,
         deterministic: bool = False,
         no_validation: bool = False,
         reduce_lr_on_plateau_monitor: str = "val_loss",
+        val_loss_fn: nn.Module | None = None,
     ) -> None:
         """
         A class for Fabric-accelerated model training and inference.
@@ -83,6 +85,8 @@ class EmberModel:
             no_validation: Whether to always skip validation stage. Default is False.
             reduce_lr_on_plateau_monitor: The default metric to monitor for the
                 `ReduceLROnPlateau` scheduler, if present. Default is "val_loss".
+            val_loss_fn: Loss for default validation and evaluation steps, reported
+                as `val_loss`. None uses `loss_fn`; training always uses `loss_fn`.
         """
         super().__init__()
         self.fabric = fabric
@@ -93,6 +97,7 @@ class EmberModel:
         if setup_fabric:
             self.fabric_setup()
         self.loss_fn = loss_fn
+        self.val_loss_fn = val_loss_fn
         self.aug_fn = aug_fn
         self.schedulers = schedulers
         self.reduce_lr_on_plateau_monitor = reduce_lr_on_plateau_monitor
@@ -245,7 +250,10 @@ class EmberModel:
         """
         x, y = batch[0], batch[-1]
         y_pred = self.model(x)
-        loss_fn = cast("Callable[..., torch.Tensor]", self.loss_fn)
+        loss_fn = cast(
+            "Callable[..., torch.Tensor]",
+            self.loss_fn if self.val_loss_fn is None else self.val_loss_fn,
+        )
         loss = loss_fn(y_pred, y)
         self.report_step(self.tracker, "val", loss, y_pred, y)
 
@@ -269,7 +277,10 @@ class EmberModel:
         """
         x, y = batch[0], batch[-1]
         y_pred = self.model(x)
-        loss_fn = cast("Callable[..., torch.Tensor]", self.loss_fn)
+        loss_fn = cast(
+            "Callable[..., torch.Tensor]",
+            self.loss_fn if self.val_loss_fn is None else self.val_loss_fn,
+        )
         loss = loss_fn(y_pred, y)
         self.report_step(eval_tracker, "val", loss, y_pred, y)
 
